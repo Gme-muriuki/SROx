@@ -1,7 +1,44 @@
 [package]
-name = "SROx"
+name = "srox"
 version = "0.1.0"
 edition = "2024"
 authors = ["James Muriuki <james.muriuki.dev@gmail.com>"]
 
 [dependencies]
+tokio = { version = "1.51.1", features = ["full"] }
+
+# TLS
+rcgen = "0.14.7"
+tokio-rustls = "0.26.4"
+rustls = "0.23.37"
+rustls-pki-types = "1.14.0"
+pem = "3.0.6"
+
+
+# HTTP parsing
+httparse = "1.10.1"
+
+# Observability
+tracing = "0.1.44"
+tracing-opentelemetry = "0.32.1"
+tracing-subscriber = "0.3.23"
+opentelemetry = "0.31.0"
+opentelemetry-otlp = "0.31.1"
+opentelemetry_sdk = "0.31.0"
+prometheus = "0.14.0"
+
+
+# Config
+serde = "1.0.228"
+serde_json = "1.0.149"
+toml = "1.1.2"
+
+# Utilities
+anyhow = "1.0.102"
+thiserror = "2.0.18"
+bytes = "1.11.1"
+
+[dev-dependencies]
+cargo-audit = "0.22.1"
+rcgen = "0.14.7"
+tokio-test = "0.4.5"
