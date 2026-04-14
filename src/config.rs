@@ -16,11 +16,12 @@ pub struct Config {
     pub upstream: UpstreamConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize,Clone)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,
     pub private_key: PathBuf,
 }
+
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpstreamConfig {

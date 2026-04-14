@@ -472,6 +472,14 @@ Deliberately out of scope for v1. Not forgotten — just sequenced correctly.
 
 ---
 
+### AI Control Plane Agent (post-v1)
+
+A separate process that observes SROx telemetry via Prometheus and
+adapts proxy configuration in response to observed patterns — upstream
+degradation, traffic anomalies, circuit breaker tuning. Operates
+entirely outside the hot path. Zero latency impact on requests.
+The proxy functions correctly without it.
+
 ## Revision History
 
 | Date | Version | Change | Author |

@@ -1,9 +1,10 @@
 #![allow(unused)]
+use anyhow::Context;
 use std::{net::SocketAddr, sync::Arc};
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::config::Config;
+use crate::{config::Config, tls::build_acceptor};
 
 pub(crate) async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
     let listener = TcpListener::bind(config.addr).await?;
@@ -27,6 +28,17 @@ pub(crate) async fn serve_connection(
     socket_addr: SocketAddr,
     config: Arc<Config>,
 ) {
+    let acceptor = build_acceptor(Arc::new(config.tls.clone()))
+        .context("Building an acceptor returned an error")
+        .expect("Failed to build an acceptor");
+
+    let tls_stream = match acceptor.accept(stream).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::warn!(error = %err, "TLS handshake failed");
+            return;
+        }
+    };
 }
 
 #[derive(Debug, Error)]
