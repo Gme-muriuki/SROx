@@ -12,8 +12,8 @@ A production engineer starting a new service does not write the feature first an
 
 **Production mindset for this phase means:**
 
-- No `unwrap()` in any code path that can be reached by a client. Panics take down the whole proxy, not just one connection.
-- Every error is either handled or propagated with context. "Connection reset by peer" is not a crash — it is a log line and a continue.
+- No `unwrap()` or `expect()` in any code path that can be reached by a client. Panics take down the whole proxy, not just one connection.
+- Every error is either handled or propagated with context. "Connection reset by peer" is not a crash — it is a log line and a `return`.
 - The config is the single source of truth. The bind address lives in one place. Not in `main`, not hardcoded in a test, not in two places that can drift.
 - A test is not "I ran it and it seemed to work." A test is an assertion that will catch a regression six weeks from now when you have forgotten this code exists.
 - If something is temporary, it is either a `// TODO(phase-N): reason` comment, or it does not exist. No silent shortcuts.
@@ -35,7 +35,7 @@ flowchart TD
 
     Client -->|TCP connect| TCP
     TCP -->|accept| TLS
-    TLS -->|handshake failed: warn + drop| Client
+    TLS -->|handshake failed: warn + return| Client
     TLS -->|TlsStream| HTTP
     HTTP --> Validate
     Validate -->|no| Reject
@@ -55,36 +55,22 @@ Consistent naming is not style — it is how you communicate intent to the next 
 
 ### Functions
 
-| Pattern                    | Use when                                           | Example                                |
-| -------------------------- | -------------------------------------------------- | -------------------------------------- |
-| `noun_verb` or `verb_noun` | Transformations and constructors                   | `config_from_file`, `acceptor_build`   |
-| `handle_*`                 | Entry point for a spawned task                     | `handle_connection`, `handle_request`  |
-| `parse_*`                  | Takes raw bytes, returns structured data           | `parse_request`, `parse_headers`       |
-| `validate_*`               | Takes structured data, returns `Result<(), Error>` | `validate_config`, `validate_framing`  |
-| `reject_*`                 | Writes an error response to the client             | `reject_bad_request`, `reject_version` |
-| `load_*`                   | Reads from disk or external source                 | `load_cert_chain`, `load_private_key`  |
+| Pattern             | Use when                                           | Example                                 |
+| ------------------- | -------------------------------------------------- | --------------------------------------- |
+| `handle_*`          | Entry point for a spawned task                     | `handle_connection`, `handle_request`   |
+| `serve_*` / `run_*` | Long-running async loop                            | `serve_connection`, `run`               |
+| `parse_*`           | Takes raw bytes, returns structured data           | `parse_request`, `parse_headers`        |
+| `validate_*`        | Takes structured data, returns `Result<(), Error>` | `validate_config`, `validate_framing`   |
+| `reject_*`          | Writes an error response to the client             | `reject_bad_request`                    |
+| `load_*`            | Reads from disk or external source                 | `load_cert_chain`, `load_private_key`   |
+| `build_*`           | Constructs a complex value from parts              | `build_acceptor`, `build_server_config` |
+| `is_*` / `has_*`    | Returns `bool`                                     | `is_chunked`, `has_content_length`      |
 
 **Rules:**
 
 - No abbreviations. `cfg` is not `config`. `addr` is acceptable for `SocketAddr` — it is universally understood in networking code.
-- Async functions that run for the lifetime of a connection are named `run_*` or `serve_*`. Example: `serve_connection`.
-- Boolean-returning functions start with `is_` or `has_`. Example: `is_chunked`, `has_content_length`.
-
-### Types and structs
-
-| What it is                    | Naming          | Example                                     |
-| ----------------------------- | --------------- | ------------------------------------------- |
-| Config holder                 | Noun, no suffix | `Config`, `TlsConfig`, `UpstreamConfig`     |
-| Error type per module         | `ModuleError`   | `ConfigError`, `TlsError`, `CodecError`     |
-| Parsed HTTP request           | `ParsedRequest` | Avoids confusion with `http::Request`       |
-| A connection in progress      | `Connection`    | Held for the duration of one client session |
-| A result that carries context | Use `thiserror` | Never `Box<dyn Error>` in library code      |
-
-**Rules:**
-
-- No `Manager`, `Handler`, `Helper`, `Util`, or `Service` in type names unless the type genuinely models that concept from the domain. These names say nothing about what the type does.
-- Structs that own a resource (a socket, a file, a TLS stream) are named after the resource, not the operation. `Connection`, not `ConnectionHandler`.
-- Enums for errors are exhaustive. Every variant is a specific failure, not a catch-all. No `Other(String)` unless you genuinely have no better option.
+- No `Manager`, `Handler`, `Helper`, `Util` in type names unless the type genuinely models that concept.
+- Structs that own a resource are named after the resource. `Connection`, not `ConnectionHandler`.
 
 ### Variables
 
@@ -93,107 +79,165 @@ Consistent naming is not style — it is how you communicate intent to the next 
 - `peer_addr` for the client's `SocketAddr`
 - `req` for a `ParsedRequest`
 - `config` — never `cfg`, `conf`, or `c`
-- Loop indices: `i` is fine. But `n_bytes`, `n_headers` are better than `n` when the count means something.
 
 ---
 
 ## When to use an external crate vs std
 
-This decision comes up constantly. Here is the rule: **use std until std cannot do the job, then reach for the smallest crate that can.**
+**Use std until std cannot do the job. Then reach for the smallest crate that can.**
 
 ### Use std
 
-| Situation                               | std type                                                      |
-| --------------------------------------- | ------------------------------------------------------------- |
-| Key-value lookup, known at compile time | `std::collections::HashMap`                                   |
-| A queue of tasks                        | `std::collections::VecDeque`                                  |
-| A sorted set                            | `std::collections::BTreeMap`                                  |
-| Reading a file                          | `std::fs::File` + `std::io::BufReader`                        |
-| Byte buffers you own                    | `Vec<u8>`                                                     |
-| Shared ownership across threads         | `std::sync::Arc`                                              |
-| Interior mutability with locking        | `std::sync::RwLock` (prefer over `Mutex` for read-heavy data) |
+| Situation                       | std type                     |
+| ------------------------------- | ---------------------------- |
+| Key-value lookup                | `std::collections::HashMap`  |
+| A queue                         | `std::collections::VecDeque` |
+| Byte buffers you own            | `Vec<u8>`                    |
+| Shared ownership across threads | `std::sync::Arc`             |
+| Interior mutability, read-heavy | `std::sync::RwLock`          |
 
 ### Use an external crate — and why
 
-| Situation                                   | Crate                              | Why not std                                                                                        |
-| ------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Async TCP sockets                           | `tokio::net::TcpListener`          | std sockets are blocking. Async requires tokio's runtime.                                          |
-| TLS streams                                 | `tokio_rustls::TlsAcceptor`        | std has no TLS.                                                                                    |
-| HTTP header parsing                         | `httparse`                         | Parsing HTTP correctly from bytes is non-trivial. Writing your own is a security risk.             |
-| Byte buffers shared across async boundaries | `bytes::Bytes` / `bytes::BytesMut` | `Vec<u8>` clones on every ownership transfer. `Bytes` uses reference counting — zero-copy slicing. |
-| Error types with context                    | `thiserror`                        | std `Error` trait requires boilerplate. `thiserror` derives it cleanly.                            |
-| Propagating errors in `main` or tests       | `anyhow`                           | For application-level code where you want context chains, not for library code.                    |
-| Structured logging                          | `tracing`                          | `println!` does not give you log levels, trace IDs, or JSON output.                                |
+| Situation                            | Crate                       | Why not std                                       |
+| ------------------------------------ | --------------------------- | ------------------------------------------------- |
+| Async TCP sockets                    | `tokio::net::TcpListener`   | std sockets are blocking                          |
+| TLS streams                          | `tokio_rustls::TlsAcceptor` | std has no TLS                                    |
+| HTTP header parsing                  | `httparse`                  | Writing your own is a security risk               |
+| Byte buffers across async boundaries | `bytes::BytesMut`           | `Vec<u8>` clones on every ownership transfer      |
+| Error types with context             | `thiserror`                 | std `Error` requires boilerplate                  |
+| Error propagation in `main`          | `anyhow`                    | For application code only — not library functions |
 
 ### The decision test
 
 Before adding a dependency, answer three questions:
 
-1. **Can std do this correctly and safely?** If yes, use std.
-2. **Is the crate widely used and maintained?** Check crates.io downloads and the last commit date. If it looks abandoned, keep looking.
-3. **Is the crate doing something I could not safely do myself in a day?** HTTP parsing: yes. A simple ring buffer: no.
-
-### Specific to Phase 1a
-
-You need `bytes::BytesMut` for your read buffer. Here is why: when you read from a `TlsStream` into a `Vec<u8>` and then parse headers, the parsed header values are slices pointing into that `Vec`. The moment you hand the `Vec` to another function, the borrow checker will fight you. `BytesMut` is designed for this — you fill it, freeze it with `.freeze()` into a `Bytes`, and hand out cheap reference-counted slices without copying.
-
-You do not need `bytes` for anything else in Phase 1a. Do not reach for it beyond the read buffer.
+1. Can std do this correctly and safely? If yes, use std.
+2. Is the crate widely used and maintained?
+3. Is it doing something I could not safely do myself in a day? HTTP parsing: yes. A simple counter: no.
 
 ---
 
-## The order you build it
+## How to design error types
 
-### Step 1 — Config struct
+This is the lesson most people learn the hard way. Read it before you write a single error enum.
 
-Before a listener, before a socket, write the config.
+### The rule
+
+**Design error types for your callers, not for documentation.**
+
+Ask one question before adding an error variant: _given this error, what does my caller do differently?_
+
+If the answer is the same for ten variants — "log a warning and return" — those ten variants should be one variant. You are not writing a mirror of the library you depend on. You are communicating what went wrong in terms your caller can act on.
+
+### The trap to avoid
+
+When you see a large enum in a library (like `rustls::Error`), the instinct is to map every variant into your own error type. Resist this. You get:
+
+- A second large enum you now maintain in sync with the library forever
+- A `_ => todo!()` catch-all that panics in production when the library adds a new variant
+- Callers that cannot act on the granularity anyway
+
+### What to do instead
+
+Use `#[from]` to let `thiserror` convert the library error automatically. The full error message is preserved. You write nothing manually.
 
 ```rust
-// src/config.rs
-
-pub struct Config {
-    pub bind_addr: SocketAddr,
-    pub tls: TlsConfig,
-    pub upstream: UpstreamConfig,
+// Wrong — mirroring rustls::Error variant by variant
+#[derive(Debug, Error)]
+pub enum TlsError {
+    PeerMisbehaved(rustls::PeerMisbehaved),
+    AlertReceived(rustls::AlertDescription),
+    DecryptError,
+    // ... 20 more variants ...
+    _ => todo!() // landmine
 }
 
-pub struct TlsConfig {
-    pub cert_path: PathBuf,
-    pub key_path:  PathBuf,
-}
+// Right — your caller logs and returns regardless of which rustls variant it is
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 
-pub struct UpstreamConfig {
-    pub addr: SocketAddr,
-}
+    #[error("PEM parse error: {0}")]
+    PemParse(String),
 
-impl Config {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        // 1. read file
-        // 2. parse TOML
-        // 3. validate — cert file exists? bind addr parseable?
-        // 4. return Ok(config) or Err(ConfigError::...)
-    }
+    #[error("no certificates found in: {0}")]
+    NoCertificatesFound(PathBuf),
+
+    #[error("no private key found in: {0}")]
+    NoPrivateKeyFound(PathBuf),
+
+    #[error("invalid private key: {0}")]
+    InvalidPrivateKey(String),
+
+    #[error("TLS configuration error: {0}")]
+    Config(#[from] rustls::Error),
 }
 ```
 
-**The rule:** if `Config::from_file` returns `Ok`, the config is usable. If it returns `Err`, log and exit. No partial configs, no defaults that silently mask a misconfiguration.
+Six variants. Full error messages. No manual `From` impl. No landmine. When rustls adds a new variant, you do nothing.
+
+### The granularity test
+
+For each error variant you are about to add, complete this sentence:
+
+> "When I see this error, I will ****\_\_\_****."
+
+If the blank is identical for two variants, merge them. If the blank is "log it and move on," one variant is enough.
+
+### `anyhow` vs `thiserror` — when to use which
+
+| Situation                                                         | Use         |
+| ----------------------------------------------------------------- | ----------- |
+| A module with its own error type (tls, codec, config)             | `thiserror` |
+| `main.rs` — top-level startup errors                              | `anyhow`    |
+| Test code                                                         | `anyhow`    |
+| A function that returns `Result` but the caller only ever logs it | `anyhow`    |
+
+Never use `anyhow::Result<T, E>` — that is not a real type. `anyhow::Result<T>` is `Result<T, anyhow::Error>`. If you have your own error type, use `Result<T, YourError>`.
 
 ---
 
-### Step 2 — TCP listener
+## Startup vs per-connection: where things are built
+
+This is a subtle but critical distinction.
+
+**Built once at startup, shared across all connections:**
+
+- `TlsAcceptor` — reading cert files from disk and building a `ServerConfig` is expensive. Do it once in `run()`, wrap in `Arc`, clone cheaply per connection.
+- `Arc<Config>` — config is read-only after startup. One allocation, many readers, no lock needed.
+
+**Built once per connection:**
+
+- The TLS stream — each connection has its own handshake
+- The parsed request — each request is unique
+- The upstream TCP connection — one per request in Phase 1a (pool comes in Phase 2)
+
+**The mistake to avoid:**
 
 ```rust
-// src/listener.rs
+// Wrong — cert files read from disk on every connection
+async fn serve_connection(stream: TcpStream, config: Arc<Config>) {
+    let acceptor = build_acceptor(Arc::new(config.tls.clone())).expect("...");
+    //                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    //                            This runs for every client. Expensive and wrong.
+}
 
+// Right — acceptor built once in run(), cloned per connection
 pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
-    let listener = TcpListener::bind(config.bind_addr).await?;
+    let acceptor = build_acceptor(Arc::new(config.tls.clone()))
+        .map_err(|e| ListenerError::TlsSetup(e.to_string()))?;
+    let acceptor = Arc::new(acceptor);
+
+    let listener = TcpListener::bind(config.addr).await?;
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
+                let acceptor = Arc::clone(&acceptor);
                 let config = Arc::clone(&config);
-                tokio::spawn(serve_connection(stream, peer_addr, config));
+                tokio::spawn(serve_connection(stream, peer_addr, acceptor, config));
             }
             Err(e) => {
-                // transient OS error — log and continue, do not exit
                 tracing::error!(error = %e, "accept failed");
             }
         }
@@ -201,98 +245,255 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
 }
 ```
 
-The `Err` branch is the important one. `accept()` fails on transient OS errors. That is not a reason to bring down the proxy.
+---
 
-Note `Arc<Config>` — the config is read-only after startup and shared across all connection tasks. `Arc` with no lock is the right tool: multiple readers, zero writers.
+## Log levels — what they mean
+
+Every log level is a contract with the person debugging at 2am.
+
+| Level   | Meaning                                            | Example in SROx                            |
+| ------- | -------------------------------------------------- | ------------------------------------------ |
+| `error` | Something is wrong with SROx itself                | `accept()` failed, upstream connect failed |
+| `warn`  | Something was wrong with the client or environment | TLS handshake failed, bad request framing  |
+| `info`  | Normal significant events                          | Proxy started, upstream added              |
+| `debug` | Useful when diagnosing a specific issue            | Request parsed, cache key computed         |
+| `trace` | Byte-level detail                                  | Raw bytes received                         |
+
+The distinction between `error` and `warn` matters: `error` pages someone on your team. `warn` does not. Use them accordingly.
 
 ---
 
-### Step 3 — TLS handshake
+## The order you build it
+
+### Step 1 — Error types first
+
+Write `error.rs` before any other module. Every other module depends on it. Apply the granularity test to every variant before you add it.
+
+```rust
+// src/error.rs — one file, all error types for Phase 1a
+
+pub use config_error::ConfigError;
+pub use tls_error::TlsError;
+pub use codec_error::CodecError;
+pub use listener_error::ListenerError;
+```
+
+Or keep them in their respective modules (`config.rs`, `tls.rs`, etc.) — either works. What matters is that they exist before you write the functions that return them.
+
+---
+
+### Step 2 — Config struct
+
+```rust
+// src/config.rs
+
+pub struct Config {
+    pub addr: SocketAddr,
+    pub tls: TlsConfig,
+    pub upstream: UpstreamConfig,
+}
+
+pub struct TlsConfig {
+    pub cert_path: PathBuf,
+    pub private_key: PathBuf,
+}
+
+pub struct UpstreamConfig {
+    pub addr: SocketAddr,
+}
+
+impl Config {
+    pub fn load_from_file(path: &Path) -> Result<Self, ConfigError> {
+        let file = fs::read_to_string(path)?;
+        let config: Config = toml::from_str(&file)?;
+
+        if !config.tls.cert_path.exists() {
+            return Err(ConfigError::CertNotFound(config.tls.cert_path.clone()));
+        }
+        if !config.tls.private_key.exists() {
+            return Err(ConfigError::KeyNotFound(config.tls.private_key.clone()));
+        }
+
+        Ok(config)
+    }
+}
+```
+
+**The rule:** if `load_from_file` returns `Ok`, the config is usable. Full stop.
+
+---
+
+### Step 3 — TLS acceptor
 
 ```rust
 // src/tls.rs
 
-pub fn build_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
-    // load_cert_chain(&config.cert_path)?
-    // load_private_key(&config.key_path)?
-    // build ServerConfig: min TLS 1.2, no 0-RTT
-    // return TlsAcceptor
+pub(crate) fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsError> {
+    let cert_chain = load_cert_chain(&config.cert_path)?;
+    let private_key = load_private_key(&config.private_key)?;
+    let server_config = build_server_config(cert_chain, private_key)?;
+    Ok(TlsAcceptor::from(server_config))
+}
+
+fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
+    let bytes = fs::read(path)?;
+    let certs = pem::parse_many(bytes)
+        .map_err(|e| TlsError::PemParse(e.to_string()))?
+        .into_iter()
+        .filter(|p| p.tag() == "CERTIFICATE")
+        .map(|p| CertificateDer::from(p.into_contents()))
+        .collect::<Vec<_>>();
+
+    if certs.is_empty() {
+        return Err(TlsError::NoCertificatesFound(path.to_path_buf()));
+    }
+    Ok(certs)
+}
+
+fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
+    let bytes = fs::read(path)?;
+    let key = pem::parse_many(bytes)
+        .map_err(|e| TlsError::PemParse(e.to_string()))?
+        .into_iter()
+        .find(|p| matches!(p.tag(), "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY"))
+        .ok_or_else(|| TlsError::NoPrivateKeyFound(path.to_path_buf()))?;
+
+    PrivateKeyDer::try_from(key.into_contents())
+        .map_err(|e| TlsError::InvalidPrivateKey(e.to_string()))
+}
+
+fn build_server_config(
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> Result<Arc<ServerConfig>, TlsError> {
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    Ok(Arc::new(config))
 }
 ```
 
-In `serve_connection`:
+---
+
+### Step 4 — Listener
+
+Build the acceptor once. Share it.
 
 ```rust
-let tls_stream = match acceptor.accept(stream).await {
-    Ok(s) => s,
-    Err(e) => {
-        // bad client — warn, not error
-        tracing::warn!(peer = %peer_addr, error = %e, "TLS handshake failed");
-        return;
-    }
-};
-```
+// src/listener.rs
 
-A failed TLS handshake is not an error in your proxy — it is a bad client. The log level distinction matters: `error` means something is wrong with SROx. `warn` means something was wrong with the client.
+pub(crate) async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
+    let acceptor = build_acceptor(Arc::new(config.tls.clone()))
+        .map_err(|e| ListenerError::TlsSetup(e.to_string()))?;
+    let acceptor = Arc::new(acceptor);
+
+    let listener = TcpListener::bind(config.addr).await?;
+    tracing::info!(addr = %config.addr, "listening");
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer_addr)) => {
+                let acceptor = Arc::clone(&acceptor);
+                let config = Arc::clone(&config);
+                tokio::spawn(serve_connection(stream, peer_addr, acceptor, config));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "accept failed");
+            }
+        }
+    }
+}
+
+async fn serve_connection(
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    acceptor: Arc<TlsAcceptor>,
+    config: Arc<Config>,
+) {
+    let tls_stream = match acceptor.accept(stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(peer = %peer_addr, error = %e, "TLS handshake failed");
+            return;
+        }
+    };
+
+    // TODO(phase-1a): parse request and forward to upstream
+}
+```
 
 ---
 
-### Step 4 — HTTP/1.1 parsing
+### Step 5 — HTTP/1.1 parsing
 
 ```rust
 // src/http_codec.rs
 
-pub struct ParsedRequest {
-    pub method:  String,
-    pub path:    String,
-    pub version: u8,
-    pub headers: Vec<(String, String)>,
-    pub body:    Bytes,
-}
-
 pub fn parse_request(buf: &BytesMut) -> Result<ParsedRequest, CodecError> {
-    // use httparse to parse headers
-    // validate_framing(&headers)?   ← Content-Length vs Transfer-Encoding check
-    // validate_version(version)?    ← reject HTTP/1.0
-    // validate_header_size(buf)?    ← reject if > 8KB
-}
+    if buf.len() > 8 * 1024 {
+        return Err(CodecError::RequestTooLarge);
+    }
 
-fn validate_framing(headers: &[httparse::Header]) -> Result<(), CodecError> {
-    // if both Content-Length and Transfer-Encoding present → CodecError::AmbiguousFraming
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = Request::new(&mut headers);
+
+    match req.parse(buf.as_ref())? {
+        httparse::Status::Complete(body_offset) => {
+            let version = req.version.ok_or(CodecError::InvalidRequest)?;
+            validate_version(version)?;
+            validate_framing(req.headers)?;
+
+            let headers = req
+                .headers
+                .iter()
+                .map(|h| {
+                    let name = h.name.to_string();
+                    let value = String::from_utf8_lossy(h.value).to_string();
+                    (name, value)
+                })
+                .collect();
+
+            let body = Bytes::copy_from_slice(&buf[body_offset..]);
+
+            Ok(ParsedRequest {
+                method: req.method.ok_or(CodecError::InvalidRequest)?.to_string(),
+                path: req.path.ok_or(CodecError::InvalidRequest)?.to_string(),
+                version,
+                headers,
+                body,
+            })
+        }
+        // Partial means the buffer did not contain a full set of headers.
+        // For Phase 1a, treat this as an invalid request.
+        // In a future phase, signal "need more data" to the caller.
+        httparse::Status::Partial => Err(CodecError::InvalidRequest),
+    }
 }
 ```
 
-**Rejection table**
-
-| Condition                                             | Response                              |
-| ----------------------------------------------------- | ------------------------------------- |
-| Both `Content-Length` and `Transfer-Encoding` present | `400 Bad Request`                     |
-| HTTP version 1.0 or lower                             | `505 HTTP Version Not Supported`      |
-| Headers exceed 8KB                                    | `431 Request Header Fields Too Large` |
-| Parse fails entirely                                  | `400 Bad Request`                     |
-
-These are not edge cases. These are the smuggling boundary. Enforce them from day one.
-
 ---
 
-### Step 5 — Forward to upstream
+### Step 6 — Forward to upstream
 
 ```rust
-// in serve_connection, after parse_request succeeds
+// inside serve_connection, after parse_request succeeds
 
-let mut upstream = TcpStream::connect(config.upstream.addr).await
-    .map_err(|e| { tracing::error!(error = %e, "upstream connect failed"); e })?;
+let mut upstream = match TcpStream::connect(config.upstream.addr).await {
+    Ok(s) => s,
+    Err(e) => {
+        tracing::error!(peer = %peer_addr, error = %e, "upstream connect failed");
+        return;
+    }
+};
 
-// write request bytes to upstream
-// read response from upstream
-// write response back to tls_stream
+// TODO(phase-1a): write request bytes to upstream, read response, write back
 ```
 
-No pool yet. A new TCP connection per request is fine for Phase 1a. What matters now is that the forwarding path works and the bytes are correct.
+No pool. No retry. One TCP connection per request. Correct for Phase 1a.
 
 ---
 
-### Step 6 — Write the tests
+### Step 7 — Write the tests
 
 Do not move on until these pass.
 
@@ -309,22 +510,22 @@ flowchart LR
 ```
 
 **Test 1 — TCP connection is accepted**
-Bind the listener. Open a raw TCP connection. Assert the connection is accepted without error.
+Bind the listener. Open a raw TCP connection. Assert it is accepted without error.
 
 **Test 2 — TLS handshake completes**
-Use `rcgen` to generate a self-signed cert in the test setup. Connect with a TLS client that trusts that cert. Assert the handshake succeeds.
+Use `rcgen` to generate a self-signed cert in test setup. Connect with a TLS client that trusts it. Assert handshake succeeds.
 
 **Test 3 — Invalid framing is rejected**
-Send a request with both `Content-Length` and `Transfer-Encoding`. Assert you get back `400 Bad Request`.
+Send a request with both `Content-Length` and `Transfer-Encoding`. Assert `400 Bad Request`.
 
 **Test 4 — HTTP/1.0 is rejected**
-Send an HTTP/1.0 request. Assert you get back `505`.
+Send an HTTP/1.0 request. Assert `505 HTTP Version Not Supported`.
 
 **Test 5 — Valid request is forwarded**
 Spin up a minimal TCP server as the upstream. Send a valid GET request through SROx. Assert the response comes back correctly.
 
 **Test 6 — Accept loop survives a bad client**
-Connect to the listener and immediately drop the connection before the TLS handshake. Assert the listener is still accepting new connections afterward.
+Connect and immediately drop the connection before the TLS handshake. Assert the listener is still accepting new connections afterward.
 
 ---
 
@@ -350,8 +551,6 @@ cargo test
 
 ## What you are not building yet
 
-Do not be tempted. Everything below has a phase.
-
 | Feature              | Phase |
 | -------------------- | ----- |
 | Connection pooling   | 2     |
@@ -362,7 +561,7 @@ Do not be tempted. Everything below has a phase.
 | Circuit breaker      | 4     |
 | Retry logic          | 4     |
 
-If you find yourself reaching for any of these, write a `// TODO(phase-N): reason` comment and move on. The discipline of not over-building is as important as the discipline of building correctly.
+If you find yourself reaching for any of these, write a `// TODO(phase-N): reason` comment and move on.
 
 ---
 
@@ -370,12 +569,11 @@ If you find yourself reaching for any of these, write a `// TODO(phase-N): reaso
 
 ```
 src/
-├── main.rs         — parse config, build acceptor, run listener
-├── config.rs       — Config · TlsConfig · UpstreamConfig · from_file() · validation
-├── listener.rs     — run() · serve_connection()
-├── tls.rs          — build_acceptor() · load_cert_chain() · load_private_key()
-├── http_codec.rs   — ParsedRequest · parse_request() · validate_framing() · reject_*()
-└── error.rs        — ConfigError · TlsError · CodecError · ListenerError
+├── main.rs         — load config · build runtime · call listener::run
+├── config.rs       — Config · TlsConfig · UpstreamConfig · ConfigError · load_from_file
+├── tls.rs          — TlsError · build_acceptor · load_cert_chain · load_private_key · build_server_config
+├── listener.rs     — ListenerError · run · serve_connection
+├── http_codec.rs   — ParsedRequest · CodecError · parse_request · validate_framing · validate_version
 
 tests/
 └── phase1a.rs      — the six tests above
@@ -390,17 +588,18 @@ certs/              — gitignored · generated by rcgen in tests
 
 1. What does success look like for this function?
 2. What are the ways it can fail?
-3. What should happen to the connection — and to the proxy — when it fails?
-4. How will I know it works?
+3. What does my caller do differently for each failure? (granularity test)
+4. What should happen to the connection — and to the proxy — when it fails?
+5. How will I know it works?
 
-If you cannot answer all four, you are not ready to write the function yet.
+If you cannot answer all five, you are not ready to write the function yet.
 
 ---
 
 ## Revision history
 
-| Date       | Version | Note                                                                |
-| ---------- | ------- | ------------------------------------------------------------------- |
-| April 2026 | 0.1     | Phase 1a plan written pre-implementation                            |
-| April 2026 | 0.2     | Added naming conventions, data structure guidance, mermaid diagrams |
-| —          | 0.3     | Update after implementation: what matched, what changed, why        |
+| Date       | Version | Note                                                                                                                                            |
+| ---------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| April 2026 | 0.1     | Phase 1a plan written pre-implementation                                                                                                        |
+| April 2026 | 0.2     | Added naming conventions, data structure guidance, mermaid diagrams                                                                             |
+| April 2026 | 0.3     | Added error design philosophy, startup vs per-connection distinction, log level guide, corrected listener and tls patterns based on code review |
