@@ -1,9 +1,8 @@
-#![allow(unused)]
-
-use crate::{config::TlsConfig, tls_error::TlsError};
+use crate::{config::TlsConfig, errors::tls_error::TlsError};
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::{fs, path::Path, sync::Arc};
+
 use tokio_rustls::TlsAcceptor;
 
 pub(crate) fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsError> {
@@ -16,26 +15,25 @@ pub(crate) fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsE
 
 pub(self) fn load_cert_chain(
     path: &Path,
-) -> anyhow::Result<Vec<rustls_pki_types::CertificateDer<'static>>, TlsError> {
-    let pem_certs = fs::read(path)?;
+) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>, TlsError> {
+    let bytes = fs::read(path)?;
 
-    let certs = pem::parse_many(pem_certs)
+    let certs = pem::parse_many(bytes)
         .map_err(|err| TlsError::PemParseError(err.to_string()))?
         .into_iter()
-        .filter(|cert| cert.tag() == "CERTIFICATE")
-        .map(|pm| CertificateDer::from(pm.into_contents()))
-        .collect::<Vec<_>>();
-
-    if certs.is_empty() {
-        return Err(TlsError::NoCertificatesFound(path.to_path_buf()));
-    }
+        .filter(|pkey| matches!(pkey.tag(), "CERTIFICATE" | "X509 CERTIFICATE"))
+        .map(|pkey| {
+            CertificateDer::try_from(pkey.into_contents())
+                .map_err(|err| TlsError::InvalidCertificate(err.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(certs)
 }
 
 pub(self) fn load_private_key(
     path: &Path,
-) -> anyhow::Result<rustls_pki_types::PrivateKeyDer<'static>, TlsError> {
+) -> Result<rustls_pki_types::PrivateKeyDer<'static>, TlsError> {
     let pem_bytes = fs::read(path)?;
 
     let pem_keys = pem::parse_many(pem_bytes)
@@ -61,8 +59,7 @@ pub(self) fn build_server_config(
 ) -> Result<Arc<ServerConfig>, TlsError> {
     let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, keys)
-        .map_err(|err| TlsError::General(err.to_string()))?;
+        .with_single_cert(certs, keys)?;
 
     Ok(Arc::new(config))
 }
