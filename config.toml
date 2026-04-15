@@ -1,0 +1,9 @@
+
+addr = "127.0.0.1:8443"
+
+[tls]
+cert_path = "certs/cert.pem"
+private_key_path = "certs/key.pem"
+
+[upstream]
+addr = "127.0.0.1:8080"
