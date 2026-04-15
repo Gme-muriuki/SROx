@@ -16,6 +16,7 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,
+    #[serde(rename = "private_key_path")]
     pub private_key: PathBuf,
 }
 
@@ -26,11 +27,9 @@ pub struct UpstreamConfig {
 
 impl Config {
     pub fn load_from_file(path: &Path) -> Result<Self, ConfigError> {
-        // Read file
         let file = fs::read_to_string(path)?;
-        // 2. Parse toml
         let config: Config = toml::from_str(&file)?;
-        // 3. validate - cert file exist? , bind addr parseable.
+
         if !config.tls.cert_path.exists() {
             return Err(ConfigError::CertNotFound(config.tls.cert_path.clone()));
         }
@@ -38,7 +37,7 @@ impl Config {
         if !config.tls.private_key.exists() {
             return Err(ConfigError::KeyNotFound(config.tls.private_key.clone()));
         }
-        // Return Ok(Config) or Err(ConfigError);
+
         Ok(config)
     }
 }

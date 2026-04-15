@@ -63,7 +63,6 @@ pub(crate) async fn serve_connection(
     };
 
     // forward to the upstream
-
     let mut upstream = match TcpStream::connect(config.upstream.addr).await {
         Ok(s) => s,
         Err(err) => {
