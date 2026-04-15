@@ -1,35 +1,31 @@
-#![allow(unused)]
-
+use crate::errors::config_error::ConfigError;
+use serde::Deserialize;
 use std::{
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     pub addr: SocketAddr,
     pub tls: TlsConfig,
     pub upstream: UpstreamConfig,
 }
 
-#[derive(Debug, Deserialize, Serialize,Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct TlsConfig {
     pub cert_path: PathBuf,
     pub private_key: PathBuf,
 }
 
-
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct UpstreamConfig {
     pub addr: SocketAddr,
 }
 
 impl Config {
-    pub(crate) fn load_from_file(path: &Path) -> Result<Self, ConfigError> {
+    pub fn load_from_file(path: &Path) -> Result<Self, ConfigError> {
         // Read file
         let file = fs::read_to_string(path)?;
         // 2. Parse toml
@@ -45,19 +41,4 @@ impl Config {
         // Return Ok(Config) or Err(ConfigError);
         Ok(config)
     }
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum ConfigError {
-    #[error("could not read config file: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("could not parse config file: {0}")]
-    Parse(#[from] toml::de::Error),
-
-    #[error("TLS cert file not found: {0}")]
-    CertNotFound(PathBuf),
-
-    #[error("TLS private key file not found: {0}")]
-    KeyNotFound(PathBuf),
 }

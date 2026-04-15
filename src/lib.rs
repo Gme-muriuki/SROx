@@ -6,5 +6,5 @@ pub mod listener;
 pub mod pool;
 pub mod retry;
 pub mod router;
-pub mod tls_error;
 pub mod tls;
+pub mod errors;
