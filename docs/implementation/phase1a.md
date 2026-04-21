@@ -1,275 +1,245 @@
 # Phase 1a — TLS + Request Forwarding
 
-> Your only job this phase: a client sends an HTTPS request, SROx forwards it to an upstream, the response comes back. That's it. Nothing else ships until that works and is tested.
+> Status: **Complete** — proxy accepts TLS connections, parses HTTP/1.1, forwards to upstream, transfers response back to client.
 
 ---
 
-## How to think about this phase
+## What was built
 
-You are not building a proxy yet. You are building the **foundation that the proxy will stand on**. Every decision you make here — how you handle errors, how you structure config, how you log — will echo through every phase that follows.
+```mermaid
+flowchart TD
+    Client([Client HTTPS])
+    TCP[TcpListener\nbind_addr from config.toml]
+    TLS[TLS Handshake\nrustls · build_acceptor]
+    HTTP[HTTP/1.1 Parser\nhttparse · parse_request]
+    Validate{Valid request?}
+    Reject[Write HTTP error response\n400 / 505 / 431\nthen close]
+    Forward[Forward raw buf to upstream\nplain TCP · no pool yet]
+    Bidir[Bidirectional transfer\ntokio::spawn × 2]
+    Client2([Client receives response])
 
-A production engineer starting a new service does not write the feature first and clean up later. They ask: _what does this need to be correct, observable, and safe to run?_ Answer that question before you write the function.
-
-**Production mindset for this phase means:**
-
-- No `unwrap()` in any code path that can be reached by a client. Panics take down the whole proxy, not just one connection.
-- Every error is either handled or propagated with context. "Connection reset by peer" is not a crash — it is a log line and a continue.
-- The config is the single source of truth. The bind address lives in one place. Not in main, not hardcoded in a test, not in two places that can drift.
-- A test is not "I ran it and it seemed to work." A test is an assertion that will catch a regression six weeks from now when you have forgotten this code exists.
-- If something is temporary, it is either a `// TODO(phase-2):` comment with a reason, or it does not exist. No silent shortcuts.
-
----
-
-## What you are building
-
-```
-Client (HTTPS)
-     │
-     ▼ TCP accept
-[ TcpListener ]
-     │
-     ▼ TLS handshake (rustls)
-[ TlsStream ]
-     │
-     ▼ HTTP/1.1 header parse (httparse)
-     │   - read request line + headers
-     │   - validate: no ambiguous framing
-     │   - reject: Content-Length + Transfer-Encoding together → 400
-     │   - reject: HTTP/1.0 → 505
-     │
-     ▼ Forward to upstream (plain TCP for now)
-[ Upstream ]
-     │
-     ▼ Read response, write back to client
-[ Client ]
+    Client -->|TCP connect| TCP
+    TCP -->|accept loop| TLS
+    TLS -->|handshake failed: warn + return| Client
+    TLS -->|TlsStream| HTTP
+    HTTP --> Validate
+    Validate -->|no| Reject
+    Reject --> Client
+    Validate -->|yes| Forward
+    Forward --> Bidir
+    Bidir --> Client2
 ```
 
-No caching. No circuit breaker. No pool. One upstream, hardcoded in config. That comes later.
+---
+
+## Module structure
+
+```
+src/
+├── main.rs                        — tokio runtime · config load · listener::run
+├── config.rs                      — Config · TlsConfig · UpstreamConfig · load_from_file
+├── tls.rs                         — build_acceptor · load_cert_chain · load_private_key · build_server_config
+├── listener.rs                    — run · serve_connection
+├── http_codec.rs                  — ParsedRequest · parse_request · validate_framing · validate_version
+└── errors/
+    ├── mod.rs
+    ├── config_error.rs
+    ├── tls_error.rs
+    ├── codec_error.rs
+    └── listener_error.rs
+```
 
 ---
 
-## The order you build it
+## Key decisions made during implementation
 
-### Step 1 — Config struct
+### Error types — design for callers, not for documentation
 
-Before a listener, before a socket, write the config.
+The first attempt at `tls_error.rs` mirrored every variant of `rustls::Error` into a custom enum, including a manual `From` impl and a `_ => todo!()` catch-all. That is a maintenance trap — when rustls adds a new variant, the `todo!()` panics in production.
+
+The correct approach: use `#[from]` to convert the library error automatically and add only the variants your caller acts on differently.
 
 ```rust
-// src/config.rs
-
-pub struct Config {
-    pub bind_addr: SocketAddr,
-    pub tls: TlsConfig,
-    pub upstream: UpstreamConfig,
-}
-
-pub struct TlsConfig {
-    pub cert_path: PathBuf,
-    pub key_path:  PathBuf,
-}
-
-pub struct UpstreamConfig {
-    pub addr: SocketAddr,
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("PEM parse error: {0}")]
+    PemParseError(String),
+    #[error("no certificates found: {0}")]
+    NoCertificatesFound(PathBuf),
+    #[error("no private key found: {0}")]
+    NoPrivateKeyFound(PathBuf),
+    #[error("invalid certificate: {0}")]
+    InvalidCertificate(String),
+    #[error("invalid private key: {0}")]
+    InvalidPrivateKey(String),
+    #[error("TLS config error: {0}")]
+    Config(#[from] rustls::Error),
 }
 ```
 
-Write a `Config::from_file(path)` that:
+**Rule:** before adding an error variant, complete the sentence: *"When I see this error, I will ___."* If the blank is identical for two variants, merge them.
 
-1. Reads the TOML file
-2. Parses it into the struct
-3. Validates it — does the cert file exist? Is the bind address valid?
-4. Returns a clean error if anything is wrong
+### `anyhow` vs `thiserror`
 
-**The rule:** if `Config::from_file` returns `Ok`, the config is usable. If it returns `Err`, the process should log the error and exit. No partial configs, no defaults that silently mask a misconfiguration.
+| Situation | Use |
+| --- | --- |
+| Module with its own error type | `thiserror` |
+| `main.rs` top-level startup | `anyhow` |
+| Test code | `anyhow` |
 
----
+`anyhow::Result<T, E>` is not a real type. `anyhow::Result<T>` is `Result<T, anyhow::Error>`. If you have your own error type, use `Result<T, YourError>`.
 
-### Step 2 — TCP listener
+### Build once at startup, share across connections
 
-```rust
-// src/listener.rs
-```
-
-Write a loop that:
-
-- Binds to `config.bind_addr`
-- Calls `listener.accept()` in a loop
-- On `Ok((stream, addr))` — spawns a Tokio task to handle the connection
-- On `Err(e)` — logs the error and **continues the loop**
-
-The `Err` case is the important one. `accept()` fails on transient OS errors. That is not a reason to bring down the proxy. Log it, keep going.
+`TlsAcceptor` reads cert files from disk and builds a `ServerConfig`. This is expensive. It must happen once in `run()`, not once per connection.
 
 ```rust
-loop {
-    match listener.accept().await {
-        Ok((stream, addr)) => {
-            tokio::spawn(handle_connection(stream, addr, config.clone()));
-        }
-        Err(e) => {
-            // log the error — do not panic, do not break
-            tracing::error!(error = %e, "accept failed");
+pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
+    // Built once here
+    let acceptor = build_acceptor(Arc::new(config.tls.clone()))
+        .map_err(|err| ListenerError::TlsSetup(err.to_string()))?;
+    let acceptor = Arc::new(acceptor);
+
+    let listener = TcpListener::bind(config.addr).await?;
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer_addr)) => {
+                // Cloned cheaply per connection — Arc clone is a reference count increment
+                let acceptor = Arc::clone(&acceptor);
+                let config = Arc::clone(&config);
+                tokio::spawn(serve_connection(stream, peer_addr, config, acceptor));
+            }
+            Err(err) => {
+                // Transient OS error — log and continue, never break the loop
+                tracing::error!(error = %err, "accept failed");
+            }
         }
     }
 }
 ```
 
----
+### Log levels are a contract
 
-### Step 3 — TLS handshake
+| Level | Meaning | Example |
+| --- | --- | --- |
+| `error` | Something wrong with SROx | `accept()` failed, upstream connect failed |
+| `warn` | Something wrong with the client | TLS handshake failed, bad framing |
+| `info` | Normal significant events | Proxy started, transfer complete |
+| `debug` | Diagnostic detail | Request parsed, cache key |
 
-Take the raw `TcpStream` and wrap it in a TLS acceptor.
+### Forward raw bytes, not parsed body
+
+The first implementation forwarded `parsed.body` to upstream:
 
 ```rust
-// src/tls.rs
-
-pub fn build_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, ConfigError> {
-    // load cert chain
-    // load private key
-    // build ServerConfig with TLS 1.2 minimum
-    // return TlsAcceptor
-}
+// Wrong — sends only the body, upstream never sees the HTTP request line or headers
+upstream.write_all(&parsed.body).await
 ```
 
-In `handle_connection`:
+The upstream is an HTTP server. It needs to receive a complete HTTP request — request line, headers, and body. The fix is to forward the raw buffer:
 
 ```rust
-let tls_stream = match acceptor.accept(tcp_stream).await {
-    Ok(s) => s,
-    Err(e) => {
-        tracing::warn!(error = %e, "TLS handshake failed");
-        return; // client goes away, proxy keeps running
+// Right — sends the complete HTTP request as received
+upstream.write_all(&buf).await
+```
+
+`ParsedRequest` is used for **validation only** in Phase 1a. The raw bytes are what gets forwarded.
+
+### Reject with a proper HTTP response
+
+When parsing fails, the first implementation called `return` and left the client in limbo. The client would render stale bytes or hang. The fix: always write an HTTP error response before dropping the connection.
+
+```rust
+let parsed = match parse_request(&buf) {
+    Ok(p) => p,
+    Err(CodecError::AmbiguousFraming) => {
+        let _ = tls_stream.write_all(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).await;
+        return;
+    }
+    Err(CodecError::InvalidHttpVersion(_)) => {
+        let _ = tls_stream.write_all(
+            b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).await;
+        return;
+    }
+    Err(CodecError::RequestTooLarge) => {
+        let _ = tls_stream.write_all(
+            b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).await;
+        return;
+    }
+    Err(_) => {
+        let _ = tls_stream.write_all(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ).await;
+        return;
     }
 };
 ```
 
-A failed TLS handshake is not an error in your proxy. It is a bad client. Log it at `warn`, not `error`. Keep the distinction — `error` means something is wrong with SROx. `warn` means something was wrong with a client.
-
 ---
 
-### Step 4 — HTTP/1.1 parsing
-
-Read bytes from the TLS stream. Parse headers with `httparse`.
-
-You are looking for:
-
-- Request method, path, HTTP version
-- All headers
-
-Reject immediately with the correct status code if:
-
-| Condition                                                     | Response                              |
-| ------------------------------------------------------------- | ------------------------------------- |
-| Both `Content-Length` and `Transfer-Encoding` present         | `400 Bad Request`                     |
-| HTTP version is 1.0 or lower                                  | `505 HTTP Version Not Supported`      |
-| Headers exceed a size limit (set a limit — 8KB is reasonable) | `431 Request Header Fields Too Large` |
-| Parse fails entirely                                          | `400 Bad Request`                     |
-
-These are not edge cases. These are the smuggling boundary. Enforce them from day one.
-
----
-
-### Step 5 — Forward to upstream
-
-Open a plain TCP connection to `config.upstream.addr`. Write the parsed request. Read the response. Write it back to the client.
-
-No pool yet. A new TCP connection per request is fine for Phase 1a. The pool comes in Phase 2. What matters now is that the forwarding path works and the bytes are correct.
-
----
-
-### Step 6 — Write the tests
-
-Do not move on until these pass:
-
-**Test 1 — TCP connection is accepted**
-Bind the listener. Open a raw TCP connection. Assert the connection is accepted without error.
-
-**Test 2 — TLS handshake completes**
-Use `rcgen` to generate a self-signed cert in the test. Connect with a TLS client that trusts that cert. Assert the handshake succeeds.
-
-**Test 3 — Invalid framing is rejected**
-Send a request with both `Content-Length` and `Transfer-Encoding`. Assert you get back `400 Bad Request`.
-
-**Test 4 — HTTP/1.0 is rejected**
-Send an HTTP/1.0 request. Assert you get back `505`.
-
-**Test 5 — Valid request is forwarded**
-Spin up a trivial TCP echo server as the upstream. Send a valid GET request through SROx. Assert the response comes back correctly.
-
-**Test 6 — Accept loop survives a bad client**
-Connect to the listener and immediately drop the connection before the TLS handshake. Assert the listener is still accepting new connections afterward.
-
----
-
-## What the deliverable looks like
+## What the implementation proved
 
 ```bash
-# This works:
+# Valid request forwarded correctly
 curl --insecure https://localhost:8443/api/test
-# Response from upstream
+# → 404 from Python upstream (correct — /api/test does not exist)
 
-# This is rejected:
+# Root path forwarded correctly
+curl --insecure https://localhost:8443/
+# → 200 directory listing from Python upstream
+
+# Smuggling attempt rejected before reaching upstream
 curl --insecure https://localhost:8443/ \
   -H "Content-Length: 5" \
   -H "Transfer-Encoding: chunked"
-# HTTP 400
+# → HTTP 400 Bad Request
 
-# All tests pass:
-cargo test
-# test result: ok. 6 passed; 0 failed
+# Proxy logs (structured JSON)
+{"timestamp":"...","level":"INFO","fields":{"message":"SROx starting"}}
+{"timestamp":"...","level":"INFO","fields":{"message":"listening","addr":"127.0.0.1:8443"}}
+{"timestamp":"...","level":"INFO","fields":{"message":"proxy transfer complete","peer":"127.0.0.1:58604"}}
 ```
 
 ---
 
-## What you are not building yet
+## Known limitations going into Phase 1b
 
-Do not be tempted to add these. They have a phase.
-
-- Connection pooling — Phase 2
-- Health checks — Phase 2
-- Caching — Phase 3
-- Circuit breaker — Phase 4
-- Retry logic — Phase 4
-- OpenTelemetry traces — Phase 1b
-- Prometheus metrics — Phase 1b
-
-If you find yourself reaching for any of these, write a `// TODO(phase-N):` comment and move on. The discipline of not over-building is as important as the discipline of building correctly.
+| Limitation | Phase that fixes it |
+| --- | --- |
+| No trace_id on any log line | 1b |
+| No Prometheus metrics endpoint | 1b |
+| No structured request log (method, path, status, duration) | 1b |
+| Single `read_buf` call — large requests may be silently truncated | 2 |
+| New TCP connection to upstream per request — no pooling | 2 |
+| No `Host` header forwarded to upstream | 2 |
+| No `X-Forwarded-For` header | 2 |
 
 ---
 
-## Files you will create
+## Bugs found and fixed
 
-```
-src/
-├── main.rs         — parse config, start listener, block on runtime
-├── config.rs       — Config struct, from_file(), validation
-├── listener.rs     — accept loop, task spawning
-├── tls.rs          — TlsAcceptor builder, cert/key loading
-├── http_codec.rs   — httparse wrapper, request parsing, rejection logic
-└── error.rs        — your error types (use thiserror)
-
-tests/
-└── phase1a.rs      — the six tests above
-
-config.toml         — example config for local development
-certs/              — gitignored, generated by rcgen in tests
-```
-
----
-
-## Questions to answer before you write a function
-
-1. What does success look like for this function?
-2. What are the ways it can fail?
-3. What should happen to the connection — and to the proxy — when it fails?
-4. How will I know it works?
-
-If you cannot answer all four, you are not ready to write the function yet.
+| Bug | Symptom | Fix |
+| --- | --- | --- |
+| `tls_error.rs` mirrored every rustls variant | `_ => todo!()` landmine, unmaintainable | Replaced with 7-variant enum using `#[from]` |
+| `build_acceptor` called per connection | Disk read on every client connect | Moved to `run()`, wrapped in `Arc` |
+| `anyhow::Result<T, E>` used as return type | Does not compile — `anyhow::Result` takes one type parameter | Changed to `Result<T, TlsError>` throughout |
+| `parsed.body` forwarded to upstream | Upstream received empty body, responded with errors | Changed to forward raw `buf` |
+| No HTTP response on parse failure | Client left in limbo, rendered stale bytes | Added explicit error response writes before `return` |
 
 ---
 
 ## Revision history
 
-| Date       | Note                                                         |
-| ---------- | ------------------------------------------------------------ |
-| April 2026 | Phase 1a plan written pre-implementation                     |
-| —          | Update after implementation: what matched, what changed, why |
+| Date | Version | Note |
+| --- | --- | --- |
+| April 2026 | 0.1 | Phase 1a plan written pre-implementation |
+| April 2026 | 0.2 | Added naming conventions, data structure guidance, mermaid diagrams |
+| April 2026 | 0.3 | Added error design philosophy, startup vs per-connection distinction, log level guide |
+| April 2026 | 0.4 | Retrospective rewrite — implementation complete, bugs documented, lessons captured |
