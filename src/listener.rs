@@ -45,15 +45,6 @@ pub(crate) async fn serve_connection(
         }
     };
 
-    // forward to the upstream
-    let mut upstream = match TcpStream::connect(config.upstream.addr).await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::error!(error = %err, "upstream connect failed");
-            return;
-        }
-    };
-
     // Parse request and forward it to the upstream
     let mut buf = BytesMut::with_capacity(4096);
 
@@ -99,39 +90,46 @@ pub(crate) async fn serve_connection(
             }
             None => {
                 let _ = tls_stream
-                        .write_all( b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                        .await;
+                    .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
                 return;
             }
         },
         Err(codec_err) => match codec_err {
             CodecError::AmbiguousFraming => {
                 let _ = tls_stream
-                    .write_all( b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
                 return;
             }
             CodecError::RequestTooLarge => {
-                let _ = tls_stream.write_all(  b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
-
+                let _ = tls_stream
+                    .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
                 return;
             }
             CodecError::InvalidHttpVersion(_) => {
                 let _ = tls_stream
-                        .write_all( b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                        .await;
+                    .write_all(b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
                 return;
             }
             _ => {
                 let _ = tls_stream
-                .write_all(
-                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await;
-
+                    .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
                 return;
             }
         },
+    };
+
+    // forward to the upstream
+    let mut upstream = match TcpStream::connect(config.upstream.addr).await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!(error = %err, "upstream connect failed");
+            return;
+        }
     };
 
     if let Err(err) = upstream.write_all(&buf).await {
@@ -188,5 +186,5 @@ pub(crate) async fn serve_connection(
     });
 
     let _ = tokio::join!(client_to_upstream, upstream_to_client);
-    tracing::info!(peer = %socket_addr,"proxy transfer complete")
+    tracing::info!(peer = %socket_addr, "proxy transfer complete")
 }
