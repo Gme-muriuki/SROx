@@ -6,6 +6,7 @@ authors = ["James Muriuki <james.muriuki.dev@gmail.com>"]
 
 [dependencies]
 tokio = { version = "1.51.1", features = ["full"] }
+once_cell = "1.21.4"
 
 # TLS
 rcgen = "0.14.7"

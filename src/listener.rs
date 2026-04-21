@@ -1,12 +1,11 @@
-#![allow(unused)]
 use crate::errors::listener_error::ListenerError;
-use crate::http_codec::parse_request;
-use crate::{config::Config, tls::build_acceptor};
-use anyhow::Context;
+use crate::http_codec::{ParseStatus, try_parse_headers};
+use crate::{
+    config::Config, errors::codec_error::CodecError, http_codec::parse_request, tls::build_acceptor,
+};
 use bytes::BytesMut;
 use std::{net::SocketAddr, sync::Arc};
-use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional, split};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 
 pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
@@ -33,7 +32,7 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
 }
 
 pub(crate) async fn serve_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     socket_addr: SocketAddr,
     config: Arc<Config>,
     acceptor: Arc<tokio_rustls::TlsAcceptor>,
@@ -42,22 +41,6 @@ pub(crate) async fn serve_connection(
         Ok(s) => s,
         Err(err) => {
             tracing::error!(error = %err, peer = %socket_addr, "TLs handshake failed");
-            return;
-        }
-    };
-
-    // Parse request and forward it to the upstream
-    let mut buf = BytesMut::new();
-
-    if let Err(err) = tls_stream.read_buf(&mut buf).await {
-        tracing::error!(error = %err, "read failed");
-        return;
-    };
-
-    let parsed = match parse_request(&buf) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            tracing::error!(error = %err, "failed to parse request");
             return;
         }
     };
@@ -71,7 +54,87 @@ pub(crate) async fn serve_connection(
         }
     };
 
-    if let Err(err) = upstream.write_all(&parsed.body).await {
+    // Parse request and forward it to the upstream
+    let mut buf = BytesMut::with_capacity(4096);
+
+    loop {
+        let _ = match tls_stream.read_buf(&mut buf).await {
+            Ok(0) => {
+                // Connection closed before we got a complete request
+                tracing::warn!(peer = %socket_addr, "connection closed before headers complete");
+                return;
+            }
+            Ok(n) => n,
+            Err(err) => {
+                tracing::error!(error = %err, "read failed");
+                return;
+            }
+        };
+
+        if buf.len() > 8 * 1024 {
+            let _ = tls_stream
+                .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            return;
+        }
+
+        // Try to parse what we have so far
+        match try_parse_headers(&buf) {
+            ParseStatus::Complete => break,
+            ParseStatus::Partial => continue, // need more bytes — read again
+            ParseStatus::Invalid => {
+                let _ = tls_stream
+                    .write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                return;
+            }
+        }
+    }
+
+    let _parsed = match parse_request(&buf) {
+        Ok(parsed) => match parsed {
+            Some(parsed) => {
+                tracing::info!("parsed request: {:?}", parsed);
+                parsed
+            }
+            None => {
+                let _ = tls_stream
+                        .write_all( b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                return;
+            }
+        },
+        Err(codec_err) => match codec_err {
+            CodecError::AmbiguousFraming => {
+                let _ = tls_stream
+                    .write_all( b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                return;
+            }
+            CodecError::RequestTooLarge => {
+                let _ = tls_stream.write_all(  b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+
+                return;
+            }
+            CodecError::InvalidHttpVersion(_) => {
+                let _ = tls_stream
+                        .write_all( b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                return;
+            }
+            _ => {
+                let _ = tls_stream
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+
+                return;
+            }
+        },
+    };
+
+    if let Err(err) = upstream.write_all(&buf).await {
         tracing::error!(error = %err, "failed to write to the upstream");
         return;
     }

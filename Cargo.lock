@@ -3324,6 +3324,7 @@ dependencies = [
  "bytes",
  "cargo-audit",
  "httparse",
+ "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

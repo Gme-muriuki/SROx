@@ -11,7 +11,7 @@ pub struct ParsedRequest {
     pub headers: Vec<(String, String)>,
 }
 
-pub fn parse_request(buf: &BytesMut) -> Result<ParsedRequest, CodecError> {
+pub fn parse_request(buf: &BytesMut) -> Result<Option<ParsedRequest>, CodecError> {
     if buf.len() > 8 * 1024 {
         return Err(CodecError::RequestTooLarge);
     }
@@ -19,38 +19,41 @@ pub fn parse_request(buf: &BytesMut) -> Result<ParsedRequest, CodecError> {
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = Request::new(&mut headers);
 
-    match req.parse(buf) {
-        Ok(body_offset) => {
-            let version = req.version.ok_or(CodecError::InvalidRequest)?;
-            validate_version(version)?;
-            validate_framing(req.headers)?;
+    let resp = req.parse(buf);
 
-            let headers = req
-                .headers
-                .iter()
-                .map(|head| {
-                    (
-                        head.name.to_string(),
-                        String::from_utf8_lossy(head.value).to_string(),
-                    )
-                })
-                .collect::<Vec<_>>();
+    match resp {
+        Ok(status) => match status {
+            httparse::Status::Complete(len) => {
+                let version = req.version.ok_or(CodecError::InvalidRequest)?;
+                validate_version(version)?;
+                validate_framing(req.headers)?;
 
-            let len = match body_offset {
-                httparse::Status::Complete(len) => len,
-                httparse::Status::Partial => 0,
-            };
+                let headers = req
+                    .headers
+                    .iter()
+                    .map(|head| {
+                        (
+                            head.name.to_string(),
+                            String::from_utf8_lossy(head.value).to_string(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
 
-            let body = Bytes::copy_from_slice(&buf[len..]);
+                let body = Bytes::copy_from_slice(&buf[len..]);
 
-            Ok(ParsedRequest {
-                method: req.method.ok_or(CodecError::InvalidRequest)?.to_string(),
-                body,
-                path: req.path.ok_or(CodecError::InvalidRequest)?.to_string(),
-                version,
-                headers,
-            })
-        }
+                Ok(Some(ParsedRequest {
+                    method: req.method.ok_or(CodecError::InvalidRequest)?.to_string(),
+                    body,
+                    path: req.path.ok_or(CodecError::InvalidRequest)?.to_string(),
+                    version,
+                    headers,
+                }))
+            }
+            httparse::Status::Partial => {
+                tracing::error!("partial request received");
+                Ok(None)
+            }
+        },
         Err(err) => {
             tracing::error!(error = %err, "failed to parse request");
             Err(CodecError::InvalidRequest)
@@ -82,4 +85,21 @@ pub(self) fn validate_version(version: u8) -> Result<(), CodecError> {
     }
 
     Ok(())
+}
+
+pub enum ParseStatus {
+    Complete,
+    Partial,
+    Invalid,
+}
+
+pub fn try_parse_headers(buf: &BytesMut) -> ParseStatus {
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+
+    match req.parse(buf) {
+        Ok(httparse::Status::Complete(_)) => ParseStatus::Complete,
+        Ok(httparse::Status::Partial) => ParseStatus::Partial,
+        Err(_) => ParseStatus::Invalid,
+    }
 }
