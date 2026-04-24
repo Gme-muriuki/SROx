@@ -3,7 +3,7 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
+use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, layer::SubscriberExt};
 
 pub fn init() -> Result<SdkTracerProvider> {
     // 1. Build OTel tracer that exports to Jaeger via OTLP
@@ -13,19 +13,28 @@ pub fn init() -> Result<SdkTracerProvider> {
         .build()
         .context("failed to build OTLP exporter")?;
 
+    // Resource with service name
+    let resource = Resource::builder().with_service_name("srox-proxy").build();
+
+    // Tracer provider with batch exporter and service name.
     let tracer_provider = SdkTracerProvider::builder()
+        .with_resource(resource)
         .with_batch_exporter(exporter)
-        .with_resource(Resource::builder().build())
         .build();
 
-    let tracer = tracer_provider.tracer("srox");
-
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
     // 2. Build tracing subscriber: JSON format + OTel layer
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let json_layer = tracing_subscriber::fmt::layer().json().with_ansi(false);
+    let json_layer = tracing_subscriber::fmt::layer()
+        .json()
+        .with_span_list(true)
+        .with_ansi(false)
+        .with_current_span(true)
+        .with_span_events(FmtSpan::NONE);
 
+    let tracer = tracer_provider.tracer("srox");
     let otel_layer = OpenTelemetryLayer::new(tracer);
 
     let subscriber = tracing_subscriber::Registry::default()
