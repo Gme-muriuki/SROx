@@ -3,6 +3,7 @@ name = "srox"
 version = "0.1.0"
 edition = "2024"
 authors = ["James Muriuki <james.muriuki.dev@gmail.com>"]
+build = "./srox-testlib/build.rs"
 
 [dependencies]
 tokio = { version = "1.51.1", features = ["full"] }
