@@ -11,6 +11,8 @@ pub struct Config {
     pub addr: SocketAddr,
     pub tls: TlsConfig,
     pub upstream: UpstreamConfig,
+    pub telemetry: TelemetryConfig,
+    pub metrics: MetricsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -22,6 +24,16 @@ pub struct TlsConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct UpstreamConfig {
+    pub addr: SocketAddr,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelemetryConfig {
+    pub otlp_endpoint: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct MetricsConfig {
     pub addr: SocketAddr,
 }
 
