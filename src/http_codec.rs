@@ -103,3 +103,37 @@ pub fn try_parse_headers(buf: &BytesMut) -> ParseStatus {
         Err(_) => ParseStatus::Invalid,
     }
 }
+
+pub fn parse_status_code(buf: &[u8]) -> u16 {
+    let crlf = buf
+        .windows(2)
+        .position(|pos| pos == b"\r\n")
+        .unwrap_or(buf.len());
+
+    let line = &buf[..crlf];
+
+    let mut parts = line.split(|pt| *pt == b' ' || *pt == b'\t');
+
+    // 1. Http version
+    let version = match parts.next() {
+        Some(vs) if vs.starts_with(b"HTTP/") => vs,
+        _ => return 0,
+    };
+
+    // A quick sanity check on version.
+    if version.len() < b"HTTP/x.y".len() {
+        return 0;
+    }
+
+    // 2. Status code token.
+    let status_byte = match parts.next() {
+        Some(pt) if pt.len() == 3 && pt.iter().all(|sb| sb.is_ascii_digit()) => pt,
+        _ => return 0,
+    };
+
+    let code = (status_byte[0] - b'0') as u16 * 100
+        + (status_byte[1] - b'0') as u16 * 10
+        + (status_byte[2] - b'0') as u16;
+
+    code
+}
