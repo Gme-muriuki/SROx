@@ -7,3 +7,9 @@ private_key_path = "certs/key.pem"
 
 [upstream]
 addr = "127.0.0.1:8080"
+
+[telemetry]
+otlp_endpoint = "http://localhost:4317"
+
+[metrics]
+addr = "127.0.0.1:9090"
