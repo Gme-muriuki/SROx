@@ -1,0 +1,49 @@
+services:
+  srox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: srox-proxy
+    networks:
+      - proxy
+    ports:
+      - "8443:8443"
+    expose:
+      - "9090"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./certs:/app/certs:ro
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-http://localhost:4317}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/metrics"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  backend:
+    image: kennethreitz/httpbin:latest
+    container_name: srox-backend
+    networks:
+      - proxy
+    expose:
+      - "80"
+    environment:
+      - PORT=80
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/get"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 2
+    restart: unless-stopped
+
+networks:
+  proxy:
+    driver: bridge
+    name: srox-proxy-net

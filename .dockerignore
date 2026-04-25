@@ -1,0 +1,11 @@
+target
+.git
+.gitignore
+tests
+bench
+docs
+README.md
+LICENSE
+*.md
+.env
+.env.local
