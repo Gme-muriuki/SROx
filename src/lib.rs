@@ -1,10 +1,12 @@
 pub mod circuit;
 pub mod config;
+pub mod errors;
 pub mod headers;
 pub mod http_codec;
 pub mod listener;
+pub mod metrics;
 pub mod pool;
 pub mod retry;
 pub mod router;
+pub mod telemetry;
 pub mod tls;
-pub mod errors;

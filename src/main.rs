@@ -1,22 +1,29 @@
-use srox::{config::Config, listener};
+use srox::{config::Config, listener, metrics, telemetry::telemetry};
 use std::{error::Error, path::Path, sync::Arc};
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt().json().init();
+    let provider = telemetry::init()?;
 
-    // Read config
+    //
     let config = Config::load_from_file(Path::new("config.toml")).map_err(|err| {
-        tracing::error!(error = %err , "failed to read config");
+        tracing::error!(
+            error = %err,
+            path = "config.toml",
+            "failed to load config — fix the error above and restart"
+        );
         err
     })?;
 
     let config = Arc::new(config);
 
-    tracing::info!("SROx starting");
+    // Run proxy and metrics
+    tokio::select! {
+      res = listener::run(Arc::clone(&config)) => res?,
+        res = metrics::serve_metrics(Arc::clone(&config)) => res?,
+    }
 
-    listener::run(config).await?;
+    telemetry::shutdown(provider);
 
     Ok(())
 }

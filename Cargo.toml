@@ -3,6 +3,7 @@ name = "srox"
 version = "0.1.0"
 edition = "2024"
 authors = ["James Muriuki <james.muriuki.dev@gmail.com>"]
+build = "./srox-testlib/build.rs"
 
 [dependencies]
 tokio = { version = "1.51.1", features = ["full"] }
@@ -22,9 +23,9 @@ httparse = "1.10.1"
 # Observability
 tracing = "0.1.44"
 tracing-opentelemetry = "0.32.1"
-tracing-subscriber = {version = "0.3.23", features = ["json"]}
+tracing-subscriber = {version = "0.3.23", features = ["json", "env-filter"]}
 opentelemetry = "0.31.0"
-opentelemetry-otlp = "0.31.1"
+opentelemetry-otlp = {version = "0.31.1", features = ["grpc-tonic"]}
 opentelemetry_sdk = "0.31.0"
 prometheus = "0.14.0"
 
@@ -37,8 +38,13 @@ toml = "1.1.2"
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 bytes = "1.11.1"
+uuid = {version = "1.23.1", features = ["v4"]}
+memchr = "2.8.0"
 
 [dev-dependencies]
-cargo-audit = "0.22.1" 
+cargo-audit = "0.22.1"
 rcgen = "0.14.7"
 tokio-test = "0.4.5"
+
+[workspace]
+members = ["./srox-testlib"]
