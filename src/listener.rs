@@ -1,6 +1,7 @@
 use crate::errors::listener_error::ListenerError;
 use crate::http_codec::{ParseStatus, parse_status_code, try_parse_headers};
 use crate::metrics;
+use crate::pool::ConnectionPool;
 use crate::{
     config::Config, errors::codec_error::CodecError, http_codec::parse_request, tls::build_acceptor,
 };
@@ -11,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::instrument;
 
-pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
+pub async fn run(config: Arc<Config>, pool: Arc<ConnectionPool>) -> Result<(), ListenerError> {
     let acceptor = build_acceptor(Arc::new(config.tls.clone()))
         .map_err(|err| ListenerError::TlsSetup(err.to_string()))?;
     let acceptor = Arc::new(acceptor);
@@ -23,8 +24,8 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
                 let acceptor = Arc::clone(&acceptor);
-                let config = Arc::clone(&config);
-                tokio::spawn(serve_connection(stream, peer_addr, config, acceptor));
+                let pool = Arc::clone(&pool);
+                tokio::spawn(serve_connection(stream, peer_addr, acceptor, pool));
             }
             Err(err) => {
                 // No panic
@@ -34,12 +35,12 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
     }
 }
 
-#[instrument(level = "info", skip(acceptor, stream, config), fields(peer = %socket_addr, trace_id = tracing::field::Empty))]
+#[instrument(level = "info", skip(acceptor, stream, pool), fields(peer = %socket_addr, trace_id = tracing::field::Empty))]
 pub(crate) async fn serve_connection(
     stream: TcpStream,
     socket_addr: SocketAddr,
-    config: Arc<Config>,
     acceptor: Arc<tokio_rustls::TlsAcceptor>,
+    pool: Arc<ConnectionPool>,
 ) {
     metrics::ACTIVE_CONNECTIONS.inc();
     struct ConnectionGuard;
@@ -146,8 +147,8 @@ pub(crate) async fn serve_connection(
     };
 
     // connect to the upstream
-    let mut upstream = match TcpStream::connect(config.upstream.addr).await {
-        Ok(s) => s,
+    let mut upstream = match pool.checkout().await {
+        Ok(pc) => pc,
         Err(err) => {
             tracing::error!(error = %err, "upstream connect failed");
             return;
@@ -184,16 +185,16 @@ pub(crate) async fn serve_connection(
     let forward_request = format!("{head}\r\ntraceparent:{traceparent}\r\n\r\n{body}");
 
     // forward to the upstream
-    if let Err(err) = upstream.write_all(&forward_request.as_bytes()).await {
+    if let Err(err) = upstream.stream.write_all(&forward_request.as_bytes()).await {
         tracing::error!(error = %err, "failed to write to the upstream");
         return;
     }
 
-    upstream.flush().await.ok();
+    upstream.stream.flush().await.ok();
 
     // split bidirectional transfer
     let (mut tls_read, mut tls_write) = split(tls_stream);
-    let (mut up_read, mut up_write) = split(upstream);
+    let (mut up_read, mut up_write) = split(upstream.stream);
 
     let client_to_upstream = tokio::spawn(async move {
         let mut buffer = [0u8; 4096];
@@ -304,12 +305,13 @@ pub(crate) async fn serve_connection(
 
     tracing::info!(
         trace_id = %trace_id_for_log,
-        method = %method_for_log, 
+        method = %method_for_log,
         path = %path_for_log,
         status = status_code,
         duration_ms = started_at.elapsed().as_millis(),
-        cache_status = "MISS",      // todo!() cache comes in phase 3. 
+        cache_status = "MISS",      // todo!() cache comes in phase 3.
         "request complete"
     );
-    tracing::info!(peer = %socket_addr, "proxy transfer complete")
+    tracing::info!(peer = %socket_addr, "proxy transfer complete");
+    pool.checkin(upstream).await;
 }
