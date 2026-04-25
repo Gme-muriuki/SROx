@@ -5,7 +5,7 @@ cert_path = "certs/cert.pem"
 private_key_path = "certs/key.pem"
 
 [upstream]
-addr = "backend:80"
+addr = "127.0.0.1:8080"
 pool_size = 10
 keep_alive_secs = 60
 timeout_secs = 2
