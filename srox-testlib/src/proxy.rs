@@ -41,7 +41,7 @@ use srox::{
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
-    time::{Instant, sleep},
+    time::{sleep, Instant},
 };
 
 use crate::TestCerts;

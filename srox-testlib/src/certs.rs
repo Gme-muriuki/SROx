@@ -8,7 +8,7 @@
 //!
 //!
 
-use rcgen::{CertifiedKey, generate_simple_self_signed};
+use rcgen::{generate_simple_self_signed, CertifiedKey};
 use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 

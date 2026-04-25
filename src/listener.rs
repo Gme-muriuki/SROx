@@ -293,6 +293,7 @@ pub(crate) async fn serve_connection(
     });
 
     let (_, upstream_res) = tokio::join!(client_to_upstream, upstream_to_client);
+
     let trace_id_for_log = trace_id_str.clone();
     let method_for_log = parsed.method.clone();
     let path_for_log = parsed.path.clone();
@@ -313,5 +314,7 @@ pub(crate) async fn serve_connection(
         "request complete"
     );
     tracing::info!(peer = %socket_addr, "proxy transfer complete");
-    pool.checkin(upstream).await;
+
+    // let upstream = join(up_read, up_write);
+    // pool.checkin(upstream).await;
 }
