@@ -1,6 +1,19 @@
 [package]
-name = "srox-testlib"
+name    = "srox-testlib"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+
+# srox-testlib exists purely to support integration tests.
+# It is never published, never used at runtime.
+publish = false
 
 [dependencies]
+srox = { path = ".." }
+bytes = "1"
+httparse = "1"
+rcgen = "0.13"           # self-signed cert generation
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing = "0.1.44"
