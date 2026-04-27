@@ -1,5 +1,6 @@
 pub mod circuit;
 pub mod config;
+pub mod crypto;
 pub mod errors;
 pub mod headers;
 pub mod health;
@@ -11,4 +12,3 @@ pub mod retry;
 pub mod router;
 pub mod telemetry;
 pub mod tls;
-pub mod crypto;
