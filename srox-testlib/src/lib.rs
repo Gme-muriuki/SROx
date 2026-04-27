@@ -31,6 +31,7 @@ pub use certs::TestCerts;
 pub use proxy::ProxyHandle;
 pub use upstream::{MockResponse, MockUpstream, ReceivedRequest};
 
+pub use rustls::crypto::{ring, CryptoProvider};
 pub fn make_client() -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -47,4 +48,12 @@ pub fn init_test_tracing() {
         )
         .with_test_writer() // writes to the captured stdout/stderr per test
         .try_init();
+}
+
+pub fn install_rustls_crypto_provider_once() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let provider = ring::default_provider();
+        CryptoProvider::install_default(provider).unwrap();
+    });
 }
