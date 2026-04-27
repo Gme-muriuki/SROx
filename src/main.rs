@@ -4,7 +4,7 @@ use srox::{
     health::{self, UpstreamHealth},
     listener, metrics,
     pool::ConnectionPool,
-    telemetry::telemetry,
+    telemetry::tmetry,
 };
 use std::{error::Error, path::Path, sync::Arc};
 
@@ -12,7 +12,7 @@ use std::{error::Error, path::Path, sync::Arc};
 async fn main() -> Result<(), Box<dyn Error>> {
     crypto::install_rustls_crypto_provider_once();
 
-    let provider = telemetry::init()?;
+    let provider = tmetry::init()?;
 
     //
     let config = Config::load_from_file(Path::new("config.toml")).map_err(|err| {
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         res = metrics::serve_metrics(Arc::clone(&config)) => res?,
     }
 
-    telemetry::shutdown(provider);
+    tmetry::shutdown(provider);
 
     Ok(())
 }

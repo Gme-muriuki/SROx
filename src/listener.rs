@@ -239,46 +239,46 @@ pub(crate) async fn serve_connection(
             response_buf.extend_from_slice(&buffer[..n]);
 
             let finder = memchr::memmem::Finder::new(b"\r\n\r\n");
-            if status_code == 0 {
-                if let Some(pos) = finder.find(&response_buf) {
-                    let head = &response_buf[..pos];
-                    status_code = parse_status_code(head);
+            if status_code == 0
+                && let Some(pos) = finder.find(&response_buf)
+            {
+                let head = &response_buf[..pos];
+                status_code = parse_status_code(head);
 
-                    let head_str = String::from_utf8_lossy(head);
-                    let head_with_trace = format!(
-                        "{}\r\nX-Trace-Id: {}\r\n\r\n",
-                        head_str.trim_end(),
-                        trace_id_for_response
-                    );
+                let head_str = String::from_utf8_lossy(head);
+                let head_with_trace = format!(
+                    "{}\r\nX-Trace-Id: {}\r\n\r\n",
+                    head_str.trim_end(),
+                    trace_id_for_response
+                );
 
-                    if let Err(err) = tls_write.write_all(head_with_trace.as_bytes()).await {
-                        tracing::error!(error = %err, "downstream write failed (header)");
-                        break;
-                    }
-
-                    let body = &response_buf[pos + 4..];
-                    if let Err(err) = tls_write.write_all(body).await {
-                        tracing::error!(error = %err, "downstream write failed (body)");
-                        break;
-                    }
-
-                    // Stream remaining response body
-                    loop {
-                        let n = match up_read.read(&mut buffer).await {
-                            Ok(0) => break,
-                            Ok(n) => n,
-                            Err(err) => {
-                                tracing::error!(error = %err, "upstream read failed");
-                                break;
-                            }
-                        };
-                        if let Err(err) = tls_write.write_all(&buffer[..n]).await {
-                            tracing::error!(error = %err, "downstream write failed");
-                            break;
-                        }
-                    }
+                if let Err(err) = tls_write.write_all(head_with_trace.as_bytes()).await {
+                    tracing::error!(error = %err, "downstream write failed (header)");
                     break;
                 }
+
+                let body = &response_buf[pos + 4..];
+                if let Err(err) = tls_write.write_all(body).await {
+                    tracing::error!(error = %err, "downstream write failed (body)");
+                    break;
+                }
+
+                // Stream remaining response body
+                loop {
+                    let n = match up_read.read(&mut buffer).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(err) => {
+                            tracing::error!(error = %err, "upstream read failed");
+                            break;
+                        }
+                    };
+                    if let Err(err) = tls_write.write_all(&buffer[..n]).await {
+                        tracing::error!(error = %err, "downstream write failed");
+                        break;
+                    }
+                }
+                break;
             }
         }
 

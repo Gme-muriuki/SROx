@@ -5,7 +5,7 @@ use std::{fs, path::Path, sync::Arc};
 
 use tokio_rustls::TlsAcceptor;
 
-pub(crate) fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsError> {
+pub fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsError> {
     let cert_chain = load_cert_chain(&config.cert_path)?;
     let private_key = load_private_key(&config.private_key)?;
     let config = build_server_config(cert_chain, private_key)?;
@@ -13,7 +13,8 @@ pub(crate) fn build_acceptor(config: Arc<TlsConfig>) -> Result<TlsAcceptor, TlsE
     Ok(TlsAcceptor::from(config))
 }
 
-pub(self) fn load_cert_chain(
+#[allow(clippy::unnecessary_fallible_conversions)]
+pub fn load_cert_chain(
     path: &Path,
 ) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>, TlsError> {
     let bytes = fs::read(path)?;
@@ -31,9 +32,7 @@ pub(self) fn load_cert_chain(
     Ok(certs)
 }
 
-pub(self) fn load_private_key(
-    path: &Path,
-) -> Result<rustls_pki_types::PrivateKeyDer<'static>, TlsError> {
+pub fn load_private_key(path: &Path) -> Result<rustls_pki_types::PrivateKeyDer<'static>, TlsError> {
     let pem_bytes = fs::read(path)?;
 
     let pem_keys = pem::parse_many(pem_bytes)
@@ -53,7 +52,7 @@ pub(self) fn load_private_key(
     Ok(key)
 }
 
-pub(self) fn build_server_config(
+pub fn build_server_config(
     certs: Vec<CertificateDer<'static>>,
     keys: PrivateKeyDer<'static>,
 ) -> Result<Arc<ServerConfig>, TlsError> {

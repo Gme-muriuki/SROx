@@ -61,7 +61,7 @@ pub fn parse_request(buf: &BytesMut) -> Result<Option<ParsedRequest>, CodecError
     }
 }
 
-pub(self) fn validate_framing(headers: &[httparse::Header]) -> Result<(), CodecError> {
+pub fn validate_framing(headers: &[httparse::Header]) -> Result<(), CodecError> {
     let has_content_length = headers
         .iter()
         .any(|head| head.name.eq_ignore_ascii_case("content-length"));
@@ -76,7 +76,7 @@ pub(self) fn validate_framing(headers: &[httparse::Header]) -> Result<(), CodecE
     Ok(())
 }
 
-pub(self) fn validate_version(version: u8) -> Result<(), CodecError> {
+pub fn validate_version(version: u8) -> Result<(), CodecError> {
     if version != 1 {
         return Err(CodecError::InvalidHttpVersion(format!(
             "HTTP/{}.x",
@@ -131,9 +131,7 @@ pub fn parse_status_code(buf: &[u8]) -> u16 {
         _ => return 0,
     };
 
-    let code = (status_byte[0] - b'0') as u16 * 100
+    (status_byte[0] - b'0') as u16 * 100
         + (status_byte[1] - b'0') as u16 * 10
-        + (status_byte[2] - b'0') as u16;
-
-    code
+        + (status_byte[2] - b'0') as u16
 }

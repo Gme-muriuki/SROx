@@ -112,7 +112,7 @@ pub async fn serve_metrics(config: Arc<Config>) -> anyhow::Result<()> {
             buffer.len()
         );
 
-        if let Err(err) = stream.write_all(&response.as_bytes()).await {
+        if let Err(err) = stream.write_all(response.as_bytes()).await {
             tracing::error!(error = %err, "failed to write metrics header");
             let _ = stream.shutdown().await;
             continue;
