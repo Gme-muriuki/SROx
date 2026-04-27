@@ -124,7 +124,7 @@ jobs:
           key: cargo-audit-${{ runner.os }}-v0.21
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --quiet
+        run: cargo install cargo-audit --locked --quiet --force
 
       - name: Audit dependencies
         run: cargo audit
