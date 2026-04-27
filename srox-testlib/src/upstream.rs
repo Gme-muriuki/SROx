@@ -29,8 +29,8 @@ use std::{
     collections::VecDeque,
     net::SocketAddr,
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
     },
     time::Duration,
 };
