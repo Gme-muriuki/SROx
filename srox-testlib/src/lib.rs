@@ -5,21 +5,21 @@
 //! ## What lives here
 //!
 //! - [`TestCerts`] - generates a self-signed TLS cert/key pair on disk
-//! for a single run. The files are deleted when the value is dropped.
+//!   for a single run. The files are deleted when the value is dropped.
 //!
 //! - [`MockUpstream`] - a plain-TCP HTTP/1.1 server that records every
-//! request it receives and responds from a configuration queue. Used
-//! as the upstream behind a proxy under test.
+//!   request it receives and responds from a configuration queue. Used
+//!   as the upstream behind a proxy under test.
 //!
 //! - [`ProxyHandle`] - starts the SROx proxy (listener + metrics) against
-//! a given upstream, waits until it accepts connections, and shuts it
-//! down on drop.
+//!   a given upstream, waits until it accepts connections, and shuts it
+//!   down on drop.
 //!
 //! - [`make_client`] - builds a `reqwest::Client` that skips certificate
-//! verification (needed because we use self-signed certs in tests).
+//!   verification (needed because we use self-signed certs in tests).
 //!
 //! - [`init_test_tracing`] - installs a minimal `tracing` subscriber once
-//! per process. Safe to call from every test; subsequent calls are no-ops
+//!   per process. Safe to call from every test; subsequent calls are no-ops
 //!
 //!
 

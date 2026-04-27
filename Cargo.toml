@@ -43,6 +43,7 @@ uuid = {version = "1.23.1", features = ["v4"]}
 memchr = "2.8.0"
 serial_test = "3.4.0"
 oneshot = "0.2.1"
+tempfile = "3"
 
 [dev-dependencies]
 cargo-audit = "0.22.1"

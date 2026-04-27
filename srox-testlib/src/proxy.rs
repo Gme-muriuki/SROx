@@ -69,12 +69,17 @@ impl ProxyHandle {
     /// Panics if OS port allocation fails or the proxy does not
     /// become ready within 5 seconds.
     pub async fn start(upstream_addr: SocketAddr) -> Self {
-        Self::start_with_pool_size(upstream_addr, 10).await
+        Self::start_with_pool_size(upstream_addr, 10, None, None).await
     }
 
     /// Like [`start`] but with custom pool size (useful for pool-limit)
     /// tests.
-    pub async fn start_with_pool_size(upstream_addr: SocketAddr, pool_size: usize) -> Self {
+    pub async fn start_with_pool_size(
+        upstream_addr: SocketAddr,
+        pool_size: usize,
+        keep_alive_secs: Option<u64>,
+        health_interval: Option<u64>,
+    ) -> Self {
         let certs = TestCerts::generate();
 
         let proxy_addr = free_addr().await;
@@ -89,9 +94,9 @@ impl ProxyHandle {
             upstream: UpstreamConfig {
                 addr: upstream_addr,
                 pool_size,
-                keep_alive_secs: 60,
+                keep_alive_secs: keep_alive_secs.unwrap_or(60),
                 timeout_secs: 2,
-                health_check_interval_secs: 5,
+                health_check_interval_secs: health_interval.unwrap_or(5),
                 health_check_timeout_secs: 1,
                 health_check_path: "/healthz".to_string(),
             },
@@ -144,6 +149,17 @@ impl ProxyHandle {
             certs,
             shutdown: Some(shutdown_tx),
         }
+    }
+
+    pub async fn start_with_keep_alive(upstream_addr: SocketAddr, keep_alive: u64) -> Self {
+        Self::start_with_pool_size(upstream_addr, 10, Some(keep_alive), None).await
+    }
+
+    pub async fn start_with_health_interval(
+        upstream_addr: SocketAddr,
+        health_interval: u64,
+    ) -> Self {
+        Self::start_with_pool_size(upstream_addr, 10, None, Some(health_interval)).await
     }
 
     /// HTTPS base URL, e.g `"http://127.0.0.1:59312"`
