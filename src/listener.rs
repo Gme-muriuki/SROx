@@ -185,7 +185,7 @@ pub(crate) async fn serve_connection(
     let forward_request = format!("{head}\r\ntraceparent:{traceparent}\r\n\r\n{body}");
 
     // forward to the upstream
-    if let Err(err) = upstream.stream.write_all(&forward_request.as_bytes()).await {
+    if let Err(err) = upstream.stream.write_all(forward_request.as_bytes()).await {
         tracing::error!(error = %err, "failed to write to the upstream");
         return;
     }
