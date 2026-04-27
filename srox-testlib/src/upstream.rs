@@ -29,8 +29,8 @@ use std::{
     collections::VecDeque,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -246,16 +246,11 @@ impl MockUpstream {
 // ----------------- Accept + connection loop ------------------
 
 async fn accept_loop(listener: TcpListener, state: Arc<MockState>) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                state.connection_counter.fetch_add(1, Ordering::SeqCst);
+    while let Ok((stream, addr)) = listener.accept().await {
+        state.connection_counter.fetch_add(1, Ordering::SeqCst);
 
-                let st = Arc::clone(&state);
-                tokio::spawn(handle_connection(stream, addr, st));
-            }
-            Err(_) => break,
-        }
+        let st = Arc::clone(&state);
+        tokio::spawn(handle_connection(stream, addr, st));
     }
 }
 
