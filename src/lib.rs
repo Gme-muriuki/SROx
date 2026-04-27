@@ -11,3 +11,4 @@ pub mod retry;
 pub mod router;
 pub mod telemetry;
 pub mod tls;
+pub mod crypto;

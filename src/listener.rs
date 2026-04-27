@@ -194,9 +194,10 @@ pub(crate) async fn serve_connection(
 
     // split bidirectional transfer
     let (mut tls_read, mut tls_write) = split(tls_stream);
-    let (mut up_read, mut up_write) = split(upstream.stream);
+    let (up_read, up_write) = split(upstream.stream);
 
     let client_to_upstream = tokio::spawn(async move {
+        let mut up_write = up_write;
         let mut buffer = [0u8; 4096];
         loop {
             let n = match tls_read.read(&mut buffer).await {
@@ -214,14 +215,16 @@ pub(crate) async fn serve_connection(
             }
         }
         let _ = up_write.shutdown().await;
+        up_write
     });
 
     let trace_id_for_response = trace_id_str.clone();
 
     let upstream_to_client = tokio::spawn(async move {
+        let mut up_read = up_read;
         let mut buffer = [0u8; 4096];
-
         let mut response_buf = Vec::new();
+        let mut status_code = 0u16;
 
         loop {
             let n = match up_read.read(&mut buffer).await {
@@ -229,75 +232,80 @@ pub(crate) async fn serve_connection(
                 Ok(n) => n,
                 Err(err) => {
                     tracing::error!(error = %err, "upstream read failed");
-                    return 0u16; // I'll propagate errors as 0.
+                    break;
                 }
             };
 
             response_buf.extend_from_slice(&buffer[..n]);
-            // Check if we have full headers.
+
             let finder = memchr::memmem::Finder::new(b"\r\n\r\n");
+            if status_code == 0 {
+                if let Some(pos) = finder.find(&response_buf) {
+                    let head = &response_buf[..pos];
+                    status_code = parse_status_code(head);
 
-            if let Some(pos) = finder.find(&response_buf) {
-                let (head, body) = response_buf.split_at(pos + 4); // include \r\n\r\n
+                    let head_str = String::from_utf8_lossy(head);
+                    let head_with_trace = format!(
+                        "{}\r\nX-Trace-Id: {}\r\n\r\n",
+                        head_str.trim_end(),
+                        trace_id_for_response
+                    );
 
-                let status_code = parse_status_code(&head);
-
-                let head_str = match str::from_utf8(&head) {
-                    Ok(hstr) => hstr,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "invalid UTF8 in response headers");
-
-                        return status_code;
-                    }
-                };
-
-                // Inject trace_id into header string
-                let head_with_trace = format!(
-                    "{head}\r\nX-Trace-Id:{trace_id}\r\n\r\n",
-                    head = head_str.trim_end(),
-                    trace_id = trace_id_for_response
-                );
-
-                if let Err(err) = tls_write.write_all(&head_with_trace.as_bytes()).await {
-                    tracing::error!(error = %err, "downstream write failed (header)");
-                    break;
-                }
-
-                if let Err(err) = tls_write.write_all(&body).await {
-                    tracing::error!(error = %err, "downstream write failed (body)");
-                    break;
-                }
-
-                loop {
-                    let n = match up_read.read(&mut buffer).await {
-                        Ok(0) => break,
-                        Ok(n) => n,
-                        Err(err) => {
-                            tracing::error!(error = %err, "upstream read failed");
-                            return 0;
-                        }
-                    };
-
-                    if let Err(err) = tls_write.write_all(&buffer[..n]).await {
-                        tracing::error!(error = %err, "downstream write failed");
-
+                    if let Err(err) = tls_write.write_all(head_with_trace.as_bytes()).await {
+                        tracing::error!(error = %err, "downstream write failed (header)");
                         break;
                     }
+
+                    let body = &response_buf[pos + 4..];
+                    if let Err(err) = tls_write.write_all(body).await {
+                        tracing::error!(error = %err, "downstream write failed (body)");
+                        break;
+                    }
+
+                    // Stream remaining response body
+                    loop {
+                        let n = match up_read.read(&mut buffer).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(err) => {
+                                tracing::error!(error = %err, "upstream read failed");
+                                break;
+                            }
+                        };
+                        if let Err(err) = tls_write.write_all(&buffer[..n]).await {
+                            tracing::error!(error = %err, "downstream write failed");
+                            break;
+                        }
+                    }
+                    break;
                 }
-                let _ = tls_write.shutdown().await;
-                return status_code;
             }
         }
 
-        0u16
+        let _ = tls_write.shutdown().await;
+        (up_read, status_code)
     });
 
-    let (_, upstream_res) = tokio::join!(client_to_upstream, upstream_to_client);
+    let (cl_to_up, up_to_cl) = tokio::join!(client_to_upstream, upstream_to_client);
+
+    let status_code = if let Ok((_, status)) = &up_to_cl {
+        *status
+    } else {
+        0u16
+    };
+
+    if let (Ok(up_write), Ok((up_read, _))) = (cl_to_up, up_to_cl) {
+        // Reconstruct stream
+        let tcp = up_read.unsplit(up_write);
+        upstream.stream = tcp;
+        upstream.last_used = Instant::now();
+
+        pool.checkin(upstream).await;
+    };
 
     let trace_id_for_log = trace_id_str.clone();
     let method_for_log = parsed.method.clone();
     let path_for_log = parsed.path.clone();
-    let status_code = upstream_res.ok().unwrap_or(0u16);
     let duration_secs = started_at.elapsed().as_secs_f64();
 
     metrics::REQUEST_DURATION
@@ -314,7 +322,4 @@ pub(crate) async fn serve_connection(
         "request complete"
     );
     tracing::info!(peer = %socket_addr, "proxy transfer complete");
-
-    // let upstream = join(up_read, up_write);
-    // pool.checkin(upstream).await;
 }

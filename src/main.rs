@@ -1,5 +1,6 @@
 use srox::{
     config::Config,
+    crypto,
     health::{self, UpstreamHealth},
     listener, metrics,
     pool::ConnectionPool,
@@ -9,6 +10,8 @@ use std::{error::Error, path::Path, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    crypto::install_rustls_crypto_provider_once();
+
     let provider = telemetry::init()?;
 
     //
