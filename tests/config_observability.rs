@@ -7,12 +7,12 @@
 //! - `srox_active_connections` is present in the metrics output.
 //! - `srox_request_duration_seconds` is recorded after a request.
 //! - `srox_active_connections` increment while a slow request is in flight
-//!      and decrements after it completes.
+//!    and decrements after it completes.
 //!
 //! **Trace propagation**
 //! -`X-Trace-Id` is present on every response
 //! - `traceparent` is present in the forwarded request with the correct
-//!     W3C format.
+//!   W3C format.
 //!
 //! **Config validation**
 //! - A config with a missing cert file exits with an error, not a panic.
@@ -34,7 +34,6 @@ use srox_testlib::{
     MockUpstream, ProxyHandle, init_test_tracing, install_rustls_crypto_provider_once, make_client,
 };
 use std::{collections::HashSet, path::Path, time::Duration};
-use tempfile;
 
 // ---------------------------- Helpers -----------------------------
 fn setup_tracing() {
