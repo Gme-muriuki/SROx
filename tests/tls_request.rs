@@ -3,17 +3,17 @@
 //! ## What these tests cover
 //!
 //! - Valid requests are forwarded to the upstream and the response is
-//! returned to the client intact.
+//!   returned to the client intact.
 //! - Requests with ambiguous framing (`Content-Length` +
-//! `Transfer-Encoding`) are rejected with 400 before reaching the
-//! upstream.
+//!   `Transfer-Encoding`) are rejected with 400 before reaching the
+//!   upstream.
 //! - Oversized request headers are rejected with 431
 //! - HTTP/1.0 requests are rejected with 505.
 //! - The proxy adds a `traceparent` header when forwarding.
 //! - Plain HTTP (non-TLS) connections are rejected at the TLS handshake
-//! layer.
+//!   layer.
 //! - Active-connection gauge increments on connect and decrements on
-//! disconnect.
+//!   disconnect.
 //!
 //! ## Isolation
 //!
@@ -187,9 +187,8 @@ async fn ambiguous_framing_rejected_400() {
     setup_tracing();
     let (upstream, proxy, _) = setup().await;
 
-    let raw_request = format!(
-        "GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nbody1"
-    );
+    let raw_request =
+        "GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\nbody1".to_string();
 
     let status = send_raw_tls(proxy.proxy_addr, raw_request.as_bytes()).await;
 
