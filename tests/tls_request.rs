@@ -2,23 +2,17 @@
 //!
 //! ## What these tests cover
 //!
-//! - Valid requests are forwarded to the upstream and the response is
-//!   returned to the client intact.
-//! - Requests with ambiguous framing (`Content-Length` +
-//!   `Transfer-Encoding`) are rejected with 400 before reaching the
-//!   upstream.
+//! - Valid requests are forwarded to the upstream and the response is returned to the client intact.
+//! - Requests with ambiguous framing (`Content-Length` + `Transfer-Encoding`) are rejected with 400 before reaching the upstream.
 //! - Oversized request headers are rejected with 431
 //! - HTTP/1.0 requests are rejected with 505.
 //! - The proxy adds a `traceparent` header when forwarding.
-//! - Plain HTTP (non-TLS) connections are rejected at the TLS handshake
-//!   layer.
-//! - Active-connection gauge increments on connect and decrements on
-//!   disconnect.
+//! - Plain HTTP (non-TLS) connections are rejected at the TLS handshake layer.
+//! - Active-connection gauge increments on connect and decrements on disconnect.
 //!
 //! ## Isolation
 //!
-//! Every test creates its own `MockUpstream` and `ProxyHandle` on
-//! OS-assigned ports.
+//! Every test creates its own `MockUpstream` and `ProxyHandle` on OS-assigned ports.
 //!
 //! Tests may run concurrently.
 

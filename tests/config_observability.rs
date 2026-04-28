@@ -6,13 +6,11 @@
 //! - The `/metrics` endpoint responds 200.
 //! - `srox_active_connections` is present in the metrics output.
 //! - `srox_request_duration_seconds` is recorded after a request.
-//! - `srox_active_connections` increment while a slow request is in flight
-//!    and decrements after it completes.
+//! - `srox_active_connections` increment while a slow request is in flight and decrements after it completes.
 //!
 //! **Trace propagation**
 //! -`X-Trace-Id` is present on every response
-//! - `traceparent` is present in the forwarded request with the correct
-//!   W3C format.
+//! - `traceparent` is present in the forwarded request with the correct W3C format.
 //!
 //! **Config validation**
 //! - A config with a missing cert file exits with an error, not a panic.
@@ -21,8 +19,7 @@
 //! ## Notes on metric isolation
 //!
 //! Prometheus uses a global registry. Metric counter accumulate across
-//! all tests in a test run. Test here assert *at least* N, never
-//! *exactly* N.
+//! all tests in a test run. Test here assert *at least* N, never *exactly* N.
 //!
 //! Test that care about relative change (active_connections) take a
 //! baseline snapshot before and after.

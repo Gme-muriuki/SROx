@@ -3,21 +3,16 @@
 //! ## What these tests cover
 //!
 //! **Connection pool**
-//! - Connections are reused: two sequential requests to same upstream
-//!   travel over the same TCP connection (same source port on the upstream side).
+//! - Connections are reused: two sequential requests to same upstream travel over the same TCP connection (same source port on the upstream side).
 //!
-//! - Stale connections are not reused: after `keep_alive_secs` the pool
-//!   opens a fresh connection instead of handing out the stale one.
+//! - Stale connections are not reused: after `keep_alive_secs` the pool opens a fresh connection instead of handing out the stale one.
 //!
-//! - Pool max-size is respected: the pool never opens more than
-//!   `pool_size` concurrent upstream connections.
+//! - Pool max-size is respected: the pool never opens more than `pool_size` concurrent upstream connections.
 //!
 //! **Health checks**
-//! - The health checker sends `GET /healthz` to the upstream on its
-//!   configured interval.
+//! - The health checker sends `GET /healthz` to the upstream on its configured interval.
 //!
-//! - When the upstream starts returning non-2xx on `/healthz`, the proxy
-//!   marks it unhealthy and the `srox_upstream_healthy` metric drops to 0.
+//! - When the upstream starts returning non-2xx on `/healthz`, the proxy marks it unhealthy and the `srox_upstream_healthy` metric drops to 0.
 //!
 //! - When the upstream recovers, the metric returns to 1.
 //!
