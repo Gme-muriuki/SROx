@@ -57,7 +57,7 @@ pub async fn run_health_check(health: Arc<UpstreamHealth>, interval_secs: u64, t
                 .with_label_values(&[&health.addr.to_string()])
                 .set(0);
         } else {
-            tracing::info!(upstream = %health.addr, "upstream recovered");
+            tracing::info!(upstream = %health.addr, "upstream is healthy");
             metrics::UPSTREAM_HEALTHY
                 .with_label_values(&[&health.addr.to_string()])
                 .set(1);

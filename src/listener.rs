@@ -120,7 +120,6 @@ pub(crate) async fn serve_connection(
         },
         Err(codec_err) => match codec_err {
             CodecError::AmbiguousFraming => {
-              // I don't think this error information is correct at all.
                 let _ = tls_stream
                     .write_all(b"HTTP/1.1 400 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
