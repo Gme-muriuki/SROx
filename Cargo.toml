@@ -2,6 +2,7 @@
 name = "srox"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88.0"
 authors = ["James Muriuki <james.muriuki.dev@gmail.com>"]
 build = "./srox-testlib/build.rs"
 
