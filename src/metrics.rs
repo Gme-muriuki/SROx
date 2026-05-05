@@ -48,9 +48,9 @@ pub static ACTIVE_CONNECTIONS: Lazy<IntGauge> = Lazy::new(|| {
 });
 
 pub static UPSTREAM_HEALTHY: Lazy<IntGaugeVec> = Lazy::new(|| {
-    let opts = Opts::new("srox_upstream_health", "Health condition of the upstream");
+    let opts = Opts::new("srox_upstream_health", "1 if upstream is healthy, 0 if not");
 
-    let hgauge = IntGaugeVec::new(opts, &["srox_health"]).expect("create srox_upstream_health");
+    let hgauge = IntGaugeVec::new(opts, &["upstream"]).expect("create srox_upstream_health");
 
     REGISTRY
         .register(Box::new(hgauge.clone()))
