@@ -70,7 +70,7 @@ async fn check_once(addr: &SocketAddr) -> Result<(), HealthError> {
     let mut stream = TcpStream::connect(addr).await?;
     // Send: GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n
     let request = format!(
-        "GET /healthz HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+        "GET /healthz HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         addr
     );
     stream.write_all(request.as_bytes()).await?;
