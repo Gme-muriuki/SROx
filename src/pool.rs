@@ -2,6 +2,7 @@ use crate::errors::pool_error::PoolError;
 use std::{
     collections::VecDeque,
     net::SocketAddr,
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
     time::{Duration, Instant},
 };
 use tokio::{net::TcpStream, sync::Mutex};
@@ -17,6 +18,7 @@ pub struct ConnectionPool {
     max_size: usize,
     keep_alive_secs: Duration,
     idle: Mutex<VecDeque<PooledConnection>>,
+    active: AtomicUsize,
 }
 
 impl ConnectionPool {
@@ -26,6 +28,7 @@ impl ConnectionPool {
             max_size,
             keep_alive_secs: Duration::from_secs(keep_alive_secs),
             idle: Mutex::new(VecDeque::new()),
+            active: AtomicUsize::new(0),
         }
     }
 
@@ -44,29 +47,39 @@ impl ConnectionPool {
         }
 
         if let Some(conn) = idle.pop_front() {
-            // Reusing existing idle connection
-            Ok(conn)
-        } else {
-            // No idle connection, open a new one.
-            let stream = TcpStream::connect(self.addr).await?;
-            Ok(PooledConnection {
-                stream,
-                last_used: Instant::now(),
-            })
+            drop(idle);
+            self.active.fetch_add(1, Relaxed);
+            return Ok(conn);
         }
+
+        // Check whether we are at capacity BEFORE opening a new connection.
+        let current_active = self.active.load(Relaxed);
+        if current_active >= self.max_size {
+            return Err(PoolError::PoolExhausted);
+        }
+
+        drop(idle);
+        self.active.fetch_add(1, Relaxed);
+        let stream = TcpStream::connect(self.addr).await.map_err(|err| {
+            self.active.fetch_sub(1, Relaxed);
+            PoolError::Connect(err)
+        })?;
+
+        Ok(PooledConnection {
+            stream,
+            last_used: Instant::now(),
+        })
     }
 
     pub async fn checkin(&self, mut conn: PooledConnection) {
+        self.active.fetch_sub(1, Relaxed);
         let mut idle = self.idle.lock().await;
 
         // If the pool is full, drop the connection
-        if idle.len() >= self.max_size {
-            return;
+        if idle.len() < self.max_size {
+            conn.last_used = Instant::now();
+            idle.push_back(conn);
         }
-
-        // Update last_used and push to back
-        conn.last_used = Instant::now();
-        idle.push_back(conn);
     }
 
     pub async fn evict_stale(&self) {
