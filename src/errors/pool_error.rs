@@ -6,4 +6,7 @@ use thiserror::Error;
 pub enum PoolError {
     #[error("upstream connection failed: {0}")]
     Connect(#[from] io::Error),
+
+    #[error("pool is exhausted")]
+    PoolExhausted,
 }
