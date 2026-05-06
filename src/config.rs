@@ -25,6 +25,12 @@ pub struct TlsConfig {
 #[derive(Debug, Deserialize)]
 pub struct UpstreamConfig {
     pub addr: SocketAddr,
+    pub pool_size: usize,
+    pub keep_alive_secs: u64,
+    pub timeout_secs: u64,
+    pub health_check_interval_secs: u64,
+    pub health_check_timeout_secs: u64,
+    pub health_check_path: String,
 }
 
 #[derive(Debug, Deserialize)]

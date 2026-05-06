@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
-use prometheus::{Encoder, HistogramOpts, HistogramVec, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, HistogramOpts, HistogramVec, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -40,9 +42,48 @@ pub static ACTIVE_CONNECTIONS: Lazy<IntGauge> = Lazy::new(|| {
 
     REGISTRY
         .register(Box::new(gauge.clone()))
-        .expect("register gauge");
+        .expect("register active connections gauge");
 
     gauge
+});
+
+pub static UPSTREAM_HEALTHY: Lazy<IntGaugeVec> = Lazy::new(|| {
+    let opts = Opts::new("srox_upstream_health", "1 if upstream is healthy, 0 if not");
+
+    let hgauge = IntGaugeVec::new(opts, &["upstream"]).expect("create srox_upstream_health");
+
+    REGISTRY
+        .register(Box::new(hgauge.clone()))
+        .expect("register health check gauge");
+
+    hgauge
+});
+pub static POOL_CONNECTIONS_ACTIVE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    let opts = Opts::new(
+        "srox_active_pool_connections",
+        "Active connection in the pool",
+    );
+
+    let pgauge = IntGaugeVec::new(opts, &["active_connections"])
+        .expect("create srox_active_pool_connections");
+
+    REGISTRY
+        .register(Box::new(pgauge.clone()))
+        .expect("register active connections");
+
+    pgauge
+});
+pub static POOL_CONNECTIONS_IDLE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    let opts = Opts::new("srox_idle_pool_connections", "Idle connections in the pool");
+
+    let ipgauge =
+        IntGaugeVec::new(opts, &["idle_connections"]).expect("create srox_idle_pool_connections");
+
+    REGISTRY
+        .register(Box::new(ipgauge.clone()))
+        .expect("register idle connections gauge");
+
+    ipgauge
 });
 
 pub async fn serve_metrics(config: Arc<Config>) -> anyhow::Result<()> {
@@ -71,7 +112,7 @@ pub async fn serve_metrics(config: Arc<Config>) -> anyhow::Result<()> {
             buffer.len()
         );
 
-        if let Err(err) = stream.write_all(&response.as_bytes()).await {
+        if let Err(err) = stream.write_all(response.as_bytes()).await {
             tracing::error!(error = %err, "failed to write metrics header");
             let _ = stream.shutdown().await;
             continue;

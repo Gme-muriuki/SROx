@@ -1,7 +1,9 @@
 pub mod circuit;
 pub mod config;
+pub mod crypto;
 pub mod errors;
 pub mod headers;
+pub mod health;
 pub mod http_codec;
 pub mod listener;
 pub mod metrics;

@@ -1,6 +1,7 @@
 use crate::errors::listener_error::ListenerError;
 use crate::http_codec::{ParseStatus, parse_status_code, try_parse_headers};
 use crate::metrics;
+use crate::pool::ConnectionPool;
 use crate::{
     config::Config, errors::codec_error::CodecError, http_codec::parse_request, tls::build_acceptor,
 };
@@ -11,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, split};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::instrument;
 
-pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
+pub async fn run(config: Arc<Config>, pool: Arc<ConnectionPool>) -> Result<(), ListenerError> {
     let acceptor = build_acceptor(Arc::new(config.tls.clone()))
         .map_err(|err| ListenerError::TlsSetup(err.to_string()))?;
     let acceptor = Arc::new(acceptor);
@@ -23,8 +24,8 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
                 let acceptor = Arc::clone(&acceptor);
-                let config = Arc::clone(&config);
-                tokio::spawn(serve_connection(stream, peer_addr, config, acceptor));
+                let pool = Arc::clone(&pool);
+                tokio::spawn(serve_connection(stream, peer_addr, acceptor, pool));
             }
             Err(err) => {
                 // No panic
@@ -34,12 +35,12 @@ pub async fn run(config: Arc<Config>) -> Result<(), ListenerError> {
     }
 }
 
-#[instrument(level = "info", skip(acceptor, stream, config), fields(peer = %socket_addr, trace_id = tracing::field::Empty))]
+#[instrument(level = "info", skip(acceptor, stream, pool), fields(peer = %socket_addr, trace_id = tracing::field::Empty))]
 pub(crate) async fn serve_connection(
     stream: TcpStream,
     socket_addr: SocketAddr,
-    config: Arc<Config>,
     acceptor: Arc<tokio_rustls::TlsAcceptor>,
+    pool: Arc<ConnectionPool>,
 ) {
     metrics::ACTIVE_CONNECTIONS.inc();
     struct ConnectionGuard;
@@ -120,7 +121,7 @@ pub(crate) async fn serve_connection(
         Err(codec_err) => match codec_err {
             CodecError::AmbiguousFraming => {
                 let _ = tls_stream
-                    .write_all(b"HTTP/1.1 505 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(b"HTTP/1.1 400 HTTP Version Not Supported\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                     .await;
                 return;
             }
@@ -146,8 +147,8 @@ pub(crate) async fn serve_connection(
     };
 
     // connect to the upstream
-    let mut upstream = match TcpStream::connect(config.upstream.addr).await {
-        Ok(s) => s,
+    let mut upstream = match pool.checkout().await {
+        Ok(pc) => pc,
         Err(err) => {
             tracing::error!(error = %err, "upstream connect failed");
             return;
@@ -184,18 +185,19 @@ pub(crate) async fn serve_connection(
     let forward_request = format!("{head}\r\ntraceparent:{traceparent}\r\n\r\n{body}");
 
     // forward to the upstream
-    if let Err(err) = upstream.write_all(&forward_request.as_bytes()).await {
+    if let Err(err) = upstream.stream.write_all(forward_request.as_bytes()).await {
         tracing::error!(error = %err, "failed to write to the upstream");
         return;
     }
 
-    upstream.flush().await.ok();
+    upstream.stream.flush().await.ok();
 
     // split bidirectional transfer
     let (mut tls_read, mut tls_write) = split(tls_stream);
-    let (mut up_read, mut up_write) = split(upstream);
+    let (up_read, up_write) = split(upstream.stream);
 
     let client_to_upstream = tokio::spawn(async move {
+        let mut up_write = up_write;
         let mut buffer = [0u8; 4096];
         loop {
             let n = match tls_read.read(&mut buffer).await {
@@ -213,14 +215,16 @@ pub(crate) async fn serve_connection(
             }
         }
         let _ = up_write.shutdown().await;
+        up_write
     });
 
     let trace_id_for_response = trace_id_str.clone();
 
     let upstream_to_client = tokio::spawn(async move {
+        let mut up_read = up_read;
         let mut buffer = [0u8; 4096];
-
         let mut response_buf = Vec::new();
+        let mut status_code = 0u16;
 
         loop {
             let n = match up_read.read(&mut buffer).await {
@@ -228,74 +232,80 @@ pub(crate) async fn serve_connection(
                 Ok(n) => n,
                 Err(err) => {
                     tracing::error!(error = %err, "upstream read failed");
-                    return 0u16; // I'll propagate errors as 0.
+                    break;
                 }
             };
 
             response_buf.extend_from_slice(&buffer[..n]);
-            // Check if we have full headers.
+
             let finder = memchr::memmem::Finder::new(b"\r\n\r\n");
+            if status_code == 0
+                && let Some(pos) = finder.find(&response_buf)
+            {
+                let head = &response_buf[..pos];
+                status_code = parse_status_code(head);
 
-            if let Some(pos) = finder.find(&response_buf) {
-                let (head, body) = response_buf.split_at(pos + 4); // include \r\n\r\n
-
-                let status_code = parse_status_code(&head);
-
-                let head_str = match str::from_utf8(&head) {
-                    Ok(hstr) => hstr,
-                    Err(err) => {
-                        tracing::warn!(error = %err, "invalid UTF8 in response headers");
-
-                        return status_code;
-                    }
-                };
-
-                // Inject trace_id into header string
+                let head_str = String::from_utf8_lossy(head);
                 let head_with_trace = format!(
-                    "{head}\r\nX-Trace-Id:{trace_id}\r\n\r\n",
-                    head = head_str.trim_end(),
-                    trace_id = trace_id_for_response
+                    "{}\r\nX-Trace-Id: {}\r\n\r\n",
+                    head_str.trim_end(),
+                    trace_id_for_response
                 );
 
-                if let Err(err) = tls_write.write_all(&head_with_trace.as_bytes()).await {
+                if let Err(err) = tls_write.write_all(head_with_trace.as_bytes()).await {
                     tracing::error!(error = %err, "downstream write failed (header)");
                     break;
                 }
 
-                if let Err(err) = tls_write.write_all(&body).await {
+                let body = &response_buf[pos + 4..];
+                if let Err(err) = tls_write.write_all(body).await {
                     tracing::error!(error = %err, "downstream write failed (body)");
                     break;
                 }
 
+                // Stream remaining response body
                 loop {
                     let n = match up_read.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(n) => n,
                         Err(err) => {
                             tracing::error!(error = %err, "upstream read failed");
-                            return 0;
+                            break;
                         }
                     };
-
                     if let Err(err) = tls_write.write_all(&buffer[..n]).await {
                         tracing::error!(error = %err, "downstream write failed");
-
                         break;
                     }
                 }
-                let _ = tls_write.shutdown().await;
-                return status_code;
+                break;
             }
         }
 
-        0u16
+        let _ = tls_write.shutdown().await;
+        (up_read, status_code)
     });
 
-    let (_, upstream_res) = tokio::join!(client_to_upstream, upstream_to_client);
+    let (cl_to_up, up_to_cl) = tokio::join!(client_to_upstream, upstream_to_client);
+
+    let status_code = if let Ok((_, status)) = &up_to_cl {
+        *status
+    } else {
+        0u16
+    };
+
+    if let (Ok(up_write), Ok((up_read, _))) = (cl_to_up, up_to_cl) {
+        // Reconstruct stream
+        let tcp = up_read.unsplit(up_write);
+        upstream.stream = tcp;
+        upstream.last_used = Instant::now();
+
+        pool.checkin(upstream).await;
+    };
+
     let trace_id_for_log = trace_id_str.clone();
     let method_for_log = parsed.method.clone();
     let path_for_log = parsed.path.clone();
-    let status_code = upstream_res.ok().unwrap_or(0u16);
     let duration_secs = started_at.elapsed().as_secs_f64();
 
     metrics::REQUEST_DURATION
@@ -304,12 +314,12 @@ pub(crate) async fn serve_connection(
 
     tracing::info!(
         trace_id = %trace_id_for_log,
-        method = %method_for_log, 
+        method = %method_for_log,
         path = %path_for_log,
         status = status_code,
         duration_ms = started_at.elapsed().as_millis(),
-        cache_status = "MISS",      // todo!() cache comes in phase 3. 
+        cache_status = "MISS",      // todo!() cache comes in phase 3.
         "request complete"
     );
-    tracing::info!(peer = %socket_addr, "proxy transfer complete")
+    tracing::info!(peer = %socket_addr, "proxy transfer complete");
 }
